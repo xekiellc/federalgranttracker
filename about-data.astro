@@ -1,0 +1,75 @@
+---
+export const prerender = true;
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="About this data — Federal Grant Tracker"
+  description="Where Federal Grant Tracker's data comes from, how often it updates, and what it doesn't cover yet."
+>
+
+<section class="page">
+  <p class="page__eyebrow">Data & methodology</p>
+  <h1 class="page__title">About this data</h1>
+  <p class="page__intro">Federal Grant Tracker is an independent project. Every figure on this site is pulled from public federal data — nothing here is estimated, surveyed, or self-reported by us.</p>
+
+  <div class="block">
+    <h2>Sources</h2>
+    <ul>
+      <li><strong>Grants.gov</strong> — open funding opportunities, forecasted and posted, across federal agencies.</li>
+      <li><strong>USASpending.gov</strong> — awarded grants: recipients, amounts, dates, and geography.</li>
+      <li><strong>SAM.gov</strong> — entity and assistance-listing details used to match opportunities to programs.</li>
+    </ul>
+  </div>
+
+  <div class="block">
+    <h2>How often it updates</h2>
+    <p>Opportunities and awards are checked on a recurring schedule against each source's own API. When a source updates its records, it typically takes a few hours to appear here — we are not a real-time feed of federal systems, and some agencies report awards on a lag of their own.</p>
+  </div>
+
+  <div class="block">
+    <h2>What "opportunity" and "award" mean here</h2>
+    <p>An <strong>opportunity</strong> is a funding announcement — it moves through its own lifecycle (forecasted, open, closed, archived) independently of whether any money has been awarded against it yet. An <strong>award</strong> is a specific, funded grant reported separately, usually after an opportunity closes, sometimes over many months. A single opportunity can have zero, one, or many awards reported against it — we show both, but we don't conflate them into one status.</p>
+  </div>
+
+  <div class="block">
+    <h2>Known limitations</h2>
+    <ul>
+      <li>Pre-award activity — submissions, resubmissions, and applications under review — is not public data anywhere, including here.</li>
+      <li>Full grant proposals and itemized budget justifications are not public; we show summary funding figures only.</li>
+      <li>Recipient location may reflect a headquarters address rather than where the funded work actually happens.</li>
+      <li>Map figures are relative to each other, not an assessment of need, merit, or outcome.</li>
+    </ul>
+  </div>
+
+  <div class="block">
+    <h2>Not an official government resource</h2>
+    <p>Federal Grant Tracker is an independent, non-governmental project. It is not affiliated with, endorsed by, or operated on behalf of any federal agency. For authoritative source data, see <a href="https://www.grants.gov" target="_blank" rel="noopener">Grants.gov</a> and <a href="https://www.usaspending.gov" target="_blank" rel="noopener">USASpending.gov</a> directly.</p>
+  </div>
+</section>
+
+</Base>
+
+<style>
+  .page{ max-width:760px; margin:0 auto; padding:56px 28px 80px; }
+  .page__eyebrow{
+    font-family:'IBM Plex Mono', monospace; font-size:11.5px; letter-spacing:0.18em;
+    color:var(--verdigris-deep); text-transform:uppercase; margin:0 0 14px;
+  }
+  .page__title{
+    font-family:'Fraunces', serif; font-weight:600; font-size:clamp(32px, 5vw, 44px);
+    margin:0 0 20px; color:var(--ink-text);
+  }
+  .page__intro{
+    font-size:16px; line-height:1.65; color:var(--ink-muted); margin:0 0 40px;
+    padding-bottom:32px; border-bottom:1px solid var(--paper-line);
+  }
+  .block{ margin-bottom:36px; }
+  .block h2{
+    font-family:'Fraunces', serif; font-size:19px; font-weight:600;
+    margin:0 0 12px; color:var(--ink-text);
+  }
+  .block p{ font-size:15px; line-height:1.7; color:var(--ink-text); margin:0; }
+  .block ul{ margin:0; padding-left:20px; }
+  .block li{ font-size:15px; line-height:1.7; color:var(--ink-text); margin-bottom:6px; }
+  .block a{ color:var(--verdigris-deep); }
+</style>
