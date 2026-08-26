@@ -1,0 +1,18 @@
+# build output
+dist/
+.astro/
+
+# dependencies
+node_modules/
+
+# environment variables / secrets
+.env
+.env.production
+.dev.vars
+
+# Cloudflare
+.wrangler/
+
+# editor/OS junk
+.DS_Store
+.vscode/
