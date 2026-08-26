@@ -1,0 +1,272 @@
+---
+const {
+  title = "Federal Grant Tracker — Follow the Federal Money",
+  description = "Every open opportunity, every award, every recipient — pulled from Grants.gov and USASpending.gov and laid out so you can actually use it."
+} = Astro.props;
+
+const ogImage = "https://federalgranttracker.com/og-image.png";
+const pageUrl = new URL(Astro.url.pathname, "https://federalgranttracker.com").toString();
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<meta name="description" content={description}>
+<link rel="canonical" href={pageUrl}>
+
+<!-- Open Graph -->
+<meta property="og:title" content={title}>
+<meta property="og:description" content={description}>
+<meta property="og:type" content="website">
+<meta property="og:url" content={pageUrl}>
+<meta property="og:image" content={ogImage}>
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content={title}>
+<meta name="twitter:description" content={description}>
+<meta name="twitter:image" content={ogImage}>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --ink:#0E1B24;
+    --ink-soft:#182A36;
+    --paper:#EDE6D6;
+    --paper-soft:#F6F1E6;
+    --paper-line: rgba(14,27,36,0.14);
+    --paper-line-soft: rgba(14,27,36,0.08);
+    --verdigris:#4F9C82;
+    --verdigris-deep:#2F6E58;
+    --wax:#B5452B;
+    --gold:#B4892E;
+    --ink-text:#182226;
+    --ink-muted:#5B6B70;
+    --paper-hairline-on-ink: rgba(237,230,214,0.16);
+  }
+
+  *{ box-sizing:border-box; }
+  html{ scroll-behavior:smooth; }
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink-text);
+    font-family:'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{ color:inherit; }
+  .mono{ font-family:'IBM Plex Mono', monospace; }
+  .display{ font-family:'Fraunces', serif; }
+
+  :focus-visible{
+    outline:2px solid var(--verdigris-deep);
+    outline-offset:3px;
+  }
+
+  /* ---------- Ticker ---------- */
+  .ticker{
+    background:var(--ink);
+    color:var(--paper);
+    overflow:hidden;
+    white-space:nowrap;
+    border-bottom:1px solid var(--paper-hairline-on-ink);
+    position:relative;
+    display:flex;
+    align-items:stretch;
+  }
+  .ticker__label{
+    flex:none;
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:0 16px;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:10.5px;
+    letter-spacing:0.14em;
+    color:rgba(237,230,214,0.55);
+    border-right:1px solid var(--paper-hairline-on-ink);
+    background:var(--ink-soft);
+  }
+  .ticker__label .pulse{
+    width:6px; height:6px; border-radius:50%;
+    background:var(--verdigris);
+    box-shadow:0 0 0 0 rgba(79,156,130,0.6);
+    animation:pulse 2.2s ease-out infinite;
+  }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 rgba(79,156,130,0.5); }
+    70%{ box-shadow:0 0 0 6px rgba(79,156,130,0); }
+    100%{ box-shadow:0 0 0 0 rgba(79,156,130,0); }
+  }
+  .ticker__viewport{ overflow:hidden; flex:1; }
+  .ticker__track{
+    display:inline-flex;
+    align-items:center;
+    animation: marquee 42s linear infinite;
+    padding:8px 0;
+    will-change: transform;
+  }
+  .ticker__item{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    letter-spacing:0.01em;
+    padding:0 22px;
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    color:rgba(237,230,214,0.68);
+    border-right:1px solid var(--paper-hairline-on-ink);
+    cursor:pointer;
+  }
+  .ticker__item:hover{ color:var(--paper); }
+  .ticker__flag{
+    font-size:9.5px;
+    letter-spacing:0.08em;
+    font-weight:600;
+    padding:2px 6px;
+    border-radius:2px;
+  }
+  .ticker__flag--awarded{ background:rgba(79,156,130,0.22); color:var(--verdigris); }
+  .ticker__flag--posted{ background:rgba(180,137,46,0.22); color:var(--gold); }
+  .ticker__amt{ color:var(--paper); font-weight:600; }
+  @keyframes marquee{
+    from{ transform:translateX(0); }
+    to{ transform:translateX(-50%); }
+  }
+  .ticker:hover .ticker__track{ animation-play-state:paused; }
+  @media (prefers-reduced-motion: reduce){
+    .ticker__track{ animation:none; }
+    .ticker__viewport{ overflow-x:auto; }
+    .ticker__label .pulse{ animation:none; }
+  }
+
+  /* ---------- Header ---------- */
+  header{
+    background:var(--paper);
+    border-bottom:1px solid var(--paper-line);
+    position:sticky; top:0; z-index:10;
+  }
+  .header__inner{
+    max-width:1180px; margin:0 auto;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 28px;
+    gap:24px;
+  }
+  .wordmark{ display:flex; flex-direction:column; line-height:1; }
+  .wordmark__main{
+    font-family:'Fraunces', serif;
+    font-weight:600;
+    font-size:19px;
+    letter-spacing:0.01em;
+  }
+  .wordmark__sub{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:9.5px;
+    letter-spacing:0.16em;
+    color:var(--verdigris-deep);
+    margin-top:3px;
+  }
+  nav{ display:flex; gap:26px; }
+  nav a{
+    text-decoration:none;
+    font-size:13.5px;
+    color:var(--ink-muted);
+    font-weight:500;
+  }
+  nav a:hover{ color:var(--ink-text); }
+  .header__actions{ display:flex; align-items:center; gap:14px; }
+  .btn-ghost{
+    border:1px solid var(--paper-line);
+    background:transparent;
+    padding:8px 16px;
+    border-radius:2px;
+    font-size:13px;
+    font-weight:500;
+    cursor:pointer;
+    color:var(--ink-text);
+    font-family:inherit;
+  }
+  .btn-ghost:hover{ border-color:var(--ink-text); }
+  .btn-solid{
+    border:1px solid var(--ink);
+    background:var(--ink);
+    color:var(--paper);
+    padding:9px 18px;
+    border-radius:2px;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    font-family:inherit;
+  }
+  .btn-solid:hover{ background:var(--ink-soft); }
+
+  /* ---------- Footer ---------- */
+  footer{
+    max-width:1180px; margin:0 auto;
+    padding:32px 28px 56px;
+    border-top:1px solid var(--paper-line);
+    font-size:12.5px; color:var(--ink-muted);
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  }
+  footer .sources{ font-family:'IBM Plex Mono', monospace; }
+
+  @media (max-width: 860px){
+    nav{ display:none; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="ticker" role="marquee" aria-label="Recent grant activity">
+    <div class="ticker__label"><span class="pulse"></span> LIVE FEDERAL MONEY</div>
+    <div class="ticker__viewport">
+      <div class="ticker__track">
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$9.1M</span> → Johns Hopkins University · HHS</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$75M</span> Clean Energy Research NOFO · DOE</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$4.7M</span> → Rural Broadband Expansion · USDA</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$12M</span> Quantum Computing NOFO · NSF</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$2.1M</span> → Materials Science Lab · NSF</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$30M</span> Wildfire Resilience NOFO · USDA</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$9.1M</span> → Johns Hopkins University · HHS</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$75M</span> Clean Energy Research NOFO · DOE</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$4.7M</span> → Rural Broadband Expansion · USDA</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$12M</span> Quantum Computing NOFO · NSF</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$2.1M</span> → Materials Science Lab · NSF</span>
+        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$30M</span> Wildfire Resilience NOFO · USDA</span>
+      </div>
+    </div>
+  </div>
+
+  <header>
+    <div class="header__inner">
+      <div class="wordmark">
+        <span class="wordmark__main">Federal Grant Tracker</span>
+        <span class="wordmark__sub">FOLLOW THE MONEY</span>
+      </div>
+      <nav>
+        <a href="/#explore">Explore</a>
+        <a href="/#record">Opportunities</a>
+        <a href="/#lookup">Recipients</a>
+        <a href="/#map">Map</a>
+        <a href="/#follow">Alerts</a>
+      </nav>
+      <div class="header__actions">
+        <button class="btn-ghost">Log in</button>
+        <button class="btn-solid">Create account</button>
+      </div>
+    </div>
+  </header>
+
+  <slot />
+
+  <footer>
+    <span>© Federal Grant Tracker. Independent project — not an official U.S. government website.</span>
+    <span class="sources">SOURCES: GRANTS.GOV · USASPENDING.GOV · SAM.GOV</span>
+  </footer>
+
+</body>
+</html>
