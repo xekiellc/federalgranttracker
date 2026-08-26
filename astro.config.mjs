@@ -4,6 +4,7 @@ import sitemap from '@astrojs/sitemap';
 
 export default defineConfig({
   output: 'server',
+  session: false,
   adapter: cloudflare({
     imageService: 'passthrough',
     prerenderEnvironment: 'node'
