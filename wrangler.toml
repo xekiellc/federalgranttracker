@@ -5,3 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 binding = "STATIC_ASSETS"
 directory = "./dist/client"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "federalgranttracker"
+database_id = "ab74e758-2416-47f4-8dbe-4d44b540444b"
