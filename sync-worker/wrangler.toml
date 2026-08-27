@@ -1,0 +1,12 @@
+name = "federalgranttracker-sync"
+compatibility_date = "2026-08-25"
+compatibility_flags = ["nodejs_compat"]
+main = "src/index.js"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "federalgranttracker"
+database_id = "ab74e758-2416-47f4-8dbe-4d44b540444b"
+
+[triggers]
+crons = ["0 */6 * * *"]
