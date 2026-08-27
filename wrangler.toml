@@ -3,7 +3,7 @@ compatibility_date = "2026-08-25"
 compatibility_flags = ["nodejs_compat"]
 
 [assets]
-binding = "STATIC_ASSETS"
+binding = "ASSETS"
 directory = "./dist/client"
 
 [[d1_databases]]
