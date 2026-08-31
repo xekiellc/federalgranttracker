@@ -20,8 +20,6 @@ let newestOpportunity: {
   slug: string;
   agency_name: string | null;
 } | null = null;
-let debugError: string | null = null;
-
 try {
   const db = (env as any)?.DB;
   if (!db) {
@@ -54,7 +52,6 @@ try {
   // fall back to nulls rather than crashing the homepage with a 500 — the
   // template below handles null gracefully everywhere.
   console.error('Homepage D1 query failed:', err);
-  debugError = err instanceof Error ? err.message : String(err);
 }
 
 // opportunities.status uses forecasted/posted/closed/archived (see schema.sql);
@@ -101,11 +98,6 @@ function formatDate(iso: string | null): string {
       <div class="ledger__asof mono">Data as of <span id="asofDate"></span> · <a href="/about-data" class="ledger__asof-link">about this data →</a></div>
     </div>
   </div>
-  {debugError && (
-    <p style="font-family:'IBM Plex Mono', monospace; font-size:12px; color:#b23; background:#fee; border:1px solid #b23; padding:12px 16px; margin:16px 0 0; border-radius:2px;">
-      TEMP DEBUG — D1 query failed: {debugError}
-    </p>
-  )}
 </section>
 
 <div class="explore" id="explore">
@@ -126,7 +118,7 @@ function formatDate(iso: string | null): string {
   {newestOpportunity ? (
     <div class="record">
       <span class="stamp">{lifecycleStage === 'open' ? 'Open' : 'Forecasted'}</span>
-      <button class="record__follow" style="position:absolute; top:26px; right:118px;">+ Follow</button>
+      <button class="record__follow" style="position:absolute; top:26px; right:118px;" disabled title="Not available yet — no accounts system built">+ Follow</button>
       <div class="record__main">
         <p class="record__agency">{newestOpportunity.agency_name ?? 'Agency unknown'}</p>
         <h3 class="record__title">{newestOpportunity.title}</h3>
@@ -215,12 +207,15 @@ function formatDate(iso: string | null): string {
     <div>
       <h2 class="follow__title">Follow what matters. We'll tell you when it moves.</h2>
       <p class="follow__copy">Set an alert on any recipient, agency, topic, or opportunity type — get an email the moment something changes.</p>
-      <button class="btn-solid">Create an alert →</button>
+      <!-- Not built yet: no accounts/auth system exists, so this can't
+           actually create an alert. Disabled rather than implying it works. -->
+      <button class="btn-solid" disabled title="Not available yet — no accounts system built">Create an alert →</button>
+      <p style="font-size:12.5px; color:rgba(237,230,214,0.6); margin-top:10px;">Alerts aren't available yet — this requires an accounts system that hasn't been built.</p>
     </div>
     <div>
-      <div class="alert-card"><span class="bell"></span> Follow NSF grants on clean energy research</div>
-      <div class="alert-card"><span class="bell"></span> Alert me when a new recipient is added to this program</div>
-      <div class="alert-card"><span class="bell"></span> New opportunities for small business (SBIR/STTR)</div>
+      <div class="alert-card" style="opacity:0.5;"><span class="bell"></span> Follow NSF grants on clean energy research</div>
+      <div class="alert-card" style="opacity:0.5;"><span class="bell"></span> Alert me when a new recipient is added to this program</div>
+      <div class="alert-card" style="opacity:0.5;"><span class="bell"></span> New opportunities for small business (SBIR/STTR)</div>
     </div>
   </div>
 </section>
