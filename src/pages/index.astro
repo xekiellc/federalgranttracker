@@ -1,6 +1,64 @@
 ---
-export const prerender = true;
 import Base from '../layouts/Base.astro';
+
+// Removed `export const prerender = true` — this page now renders per-request
+// so it can query the live D1 database via the Cloudflare adapter's runtime
+// bindings, instead of being frozen at build time with hardcoded numbers.
+
+const env = (Astro.locals as any).runtime.env;
+const db = env.DB;
+
+let openOpportunitiesCount: number | null = null;
+let agenciesTrackedCount: number | null = null;
+let newestOpportunity: {
+  title: string;
+  status: string;
+  posted_date: string | null;
+  close_date: string | null;
+  cfda_number: string | null;
+  slug: string;
+  agency_name: string | null;
+} | null = null;
+
+try {
+  const openCountResult = await db
+    .prepare(`SELECT COUNT(*) as count FROM opportunities WHERE status IN ('forecasted', 'posted')`)
+    .first();
+  openOpportunitiesCount = (openCountResult?.count as number) ?? 0;
+
+  const agenciesCountResult = await db
+    .prepare(`SELECT COUNT(*) as count FROM agencies`)
+    .first();
+  agenciesTrackedCount = (agenciesCountResult?.count as number) ?? 0;
+
+  newestOpportunity = await db
+    .prepare(`
+      SELECT o.title, o.status, o.posted_date, o.close_date, o.cfda_number, o.slug,
+             a.name as agency_name
+      FROM opportunities o
+      LEFT JOIN agencies a ON o.agency_id = a.id
+      WHERE o.status IN ('forecasted', 'posted')
+      ORDER BY o.posted_date DESC
+      LIMIT 1
+    `)
+    .first();
+} catch (err) {
+  // If D1 is unreachable for any reason, fall back to nulls rather than
+  // crashing the homepage — the template below handles null gracefully.
+  console.error('Homepage D1 query failed:', err);
+}
+
+// opportunities.status uses forecasted/posted/closed/archived (see schema.sql);
+// the lifecycle UI below displays "posted" as "Open" to match Grants.gov's
+// own public-facing language.
+const lifecycleStage = newestOpportunity?.status === 'posted' ? 'open' : newestOpportunity?.status;
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
 ---
 <Base>
 
@@ -17,18 +75,21 @@ import Base from '../layouts/Base.astro';
   <div class="ledger">
     <div class="ledger__row">
       <div class="ledger__cell">
-        <span class="ledger__num">$71.4<span class="accent">B</span></span>
+        <!-- PLACEHOLDER: awards table doesn't exist yet (USASpending sync not
+             built) — showing an honest em-dash instead of a fabricated dollar
+             figure, rather than let a fake number sit next to real data. -->
+        <span class="ledger__num">—</span>
         <span class="ledger__label">Awarded, FY2026</span>
       </div>
       <div class="ledger__cell">
-        <span class="ledger__num">4,812</span>
+        <span class="ledger__num">{openOpportunitiesCount !== null ? openOpportunitiesCount.toLocaleString() : '—'}</span>
         <span class="ledger__label">Open opportunities</span>
       </div>
       <div class="ledger__cell">
-        <span class="ledger__num">212</span>
+        <span class="ledger__num">{agenciesTrackedCount !== null ? agenciesTrackedCount : '—'}</span>
         <span class="ledger__label">Agencies tracked</span>
       </div>
-      <div class="ledger__asof mono">Data as of Aug 25, 2026 · <a href="/about-data" class="ledger__asof-link">about this data →</a></div>
+      <div class="ledger__asof mono">Data as of <span id="asofDate"></span> · <a href="/about-data" class="ledger__asof-link">about this data →</a></div>
     </div>
   </div>
 </section>
@@ -48,42 +109,48 @@ import Base from '../layouts/Base.astro';
 <section class="section" id="record">
   <p class="section__eyebrow">Newest opportunity</p>
 
-  <div class="record">
-    <span class="stamp">Open</span>
-    <button class="record__follow" style="position:absolute; top:26px; right:118px;">+ Follow</button>
-    <div class="record__main">
-      <p class="record__agency">NIH · National Institute on Aging</p>
-      <h3 class="record__title">Rural Health Research Program</h3>
-      <div class="record__amount">$127.4M total funding</div>
-      <p class="record__meta">Applications due Oct 14 · 32 awards expected · $500K–$5M per award</p>
-      <div class="record__lifecycle">
-        <span class="stage">Forecasted</span><span class="arrow">→</span>
-        <span class="stage current">Open</span><span class="arrow">→</span>
-        <span class="stage">Closed</span><span class="arrow">→</span>
-        <span class="stage">Archived</span>
-        <span class="stage-sep">·</span>
-        <span class="stage-awards">0 awards reported</span>
+  {newestOpportunity ? (
+    <div class="record">
+      <span class="stamp">{lifecycleStage === 'open' ? 'Open' : 'Forecasted'}</span>
+      <button class="record__follow" style="position:absolute; top:26px; right:118px;">+ Follow</button>
+      <div class="record__main">
+        <p class="record__agency">{newestOpportunity.agency_name ?? 'Agency unknown'}</p>
+        <h3 class="record__title">{newestOpportunity.title}</h3>
+        <p class="record__meta">
+          Posted {formatDate(newestOpportunity.posted_date)}
+          {newestOpportunity.close_date ? ` · Closes ${formatDate(newestOpportunity.close_date)}` : ' · No close date set yet'}
+        </p>
+        <div class="record__lifecycle">
+          <span class={`stage ${lifecycleStage === 'forecasted' ? 'current' : ''}`}>Forecasted</span><span class="arrow">→</span>
+          <span class={`stage ${lifecycleStage === 'open' ? 'current' : ''}`}>Open</span><span class="arrow">→</span>
+          <span class="stage">Closed</span><span class="arrow">→</span>
+          <span class="stage">Archived</span>
+        </div>
+        <div class="record__tabs">
+          <span>Overview</span><span>Eligibility</span><span>Awards</span><span>History</span><span>Documents</span>
+        </div>
+        <ul class="record__list">
+          <li><span>CFDA number</span><span class="mono">{newestOpportunity.cfda_number ?? '—'}</span></li>
+          <li><span>Opportunity page</span><span class="mono">/opportunity/{newestOpportunity.slug}</span></li>
+        </ul>
       </div>
-      <div class="record__tabs">
-        <span>Overview</span><span>Eligibility</span><span>Awards</span><span>History</span><span>Documents</span>
+      <div class="record__side">
+        <h4>Where it went last cycle</h4>
+        <!-- PLACEHOLDER: award history requires the USASpending sync, not built yet -->
+        <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">Award history isn't tracked yet — this section goes live once the USASpending sync is built.</p>
       </div>
-      <ul class="record__list">
-        <li><span>Eligible applicants</span><span>Universities, nonprofits, state govt.</span></li>
-        <li><span>Funding mechanism</span><span>R01 — Research Project Grant</span></li>
-        <li><span>CFDA number</span><span class="mono">93.866</span></li>
-      </ul>
     </div>
-    <div class="record__side">
-      <h4>Where it went last cycle</h4>
-      <div class="past-award"><span>Public university, Midwest</span><span>$4.8M</span></div>
-      <div class="past-award"><span>Regional health system, Northeast</span><span>$3.2M</span></div>
-      <div class="past-award"><span>Land-grant university, West</span><span>$2.9M</span></div>
-      <div class="past-award"><span>State university, South</span><span>$2.1M</span></div>
+  ) : (
+    <div class="record">
+      <p style="padding:20px 0; color:var(--ink-muted);">No opportunities in the database yet — run the sync worker to populate this.</p>
     </div>
-  </div>
+  )}
 </section>
 
 <section class="section" id="lookup">
+  <!-- Recipient lookup requires the `recipients` and `awards` tables,
+       sourced from USASpending.gov — not built yet. Showing an honest
+       not-available state rather than any sample/mock numbers. -->
   <div class="section__head">
     <h2 class="section__title">Recipient lookup</h2>
     <p class="section__note">Search any university, hospital, nonprofit, city, or company that receives federal funding.</p>
@@ -91,97 +158,41 @@ import Base from '../layouts/Base.astro';
 
   <div class="lookup">
     <form class="lookup__search" role="search" onsubmit="return false;">
-      <input type="text" placeholder="Search a recipient — university, nonprofit, company, city…" aria-label="Search a recipient">
-      <button type="submit">Search</button>
+      <input type="text" placeholder="Search a recipient — university, nonprofit, company, city…" aria-label="Search a recipient" disabled>
+      <button type="submit" disabled>Search</button>
     </form>
-    <p class="lookup__try">Try: <button type="button">a public university</button> · <button type="button">a hospital system</button> · <button type="button">a state government</button> · <button type="button">an aerospace company</button></p>
-
-    <div class="lookup__head">
-      <span class="lookup__name">National Research University</span>
-      <span class="lookup__total">FY2026: $184M <span class="lookup__delta">↑ 12.4%</span></span>
-    </div>
-    <p class="lookup__sub">147 awards across 6 agencies this fiscal year · sample result</p>
-
-    <div class="bar-row">
-      <span class="bar-row__label">NIH</span>
-      <div class="bar-row__track"><div class="bar-row__fill" style="width:82%"></div></div>
-      <span class="bar-row__val">$98M</span>
-    </div>
-    <div class="bar-row">
-      <span class="bar-row__label">HHS</span>
-      <div class="bar-row__track"><div class="bar-row__fill" style="width:46%; background:var(--gold);"></div></div>
-      <span class="bar-row__val">$52M</span>
-    </div>
-    <div class="bar-row">
-      <span class="bar-row__label">DOD</span>
-      <div class="bar-row__track"><div class="bar-row__fill" style="width:24%; background:var(--wax);"></div></div>
-      <span class="bar-row__val">$34M</span>
-    </div>
+    <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:20px; border-radius:2px; margin:0;">
+      Recipient and award data isn't tracked yet — this section goes live once the USASpending.gov sync is built.
+    </p>
   </div>
 </section>
 
 <section class="section section--map" id="map">
+  <!-- State-level funding requires the `awards` table joined to `states` —
+       not built yet. Showing an honest not-available state rather than a
+       map filled with invented per-state dollar figures. -->
   <div class="section__head">
     <h2 class="section__title">Where the money goes</h2>
-    <p class="section__note">Funding by state, FY2026. Click any state to see its numbers — toggle to see per capita funding instead of raw totals.</p>
+    <p class="section__note">Funding by state will appear here once award data is available.</p>
   </div>
-  <div class="map-panel">
-    <div class="map-stage">
-      <div class="metric-toggle" role="group" aria-label="Map metric">
-        <button type="button" class="active" data-metric="total" id="metricTotal">Total funding</button>
-        <button type="button" data-metric="percapita" id="metricPerCapita">Per capita</button>
-      </div>
-
-      <div class="usmap" id="usmap"></div>
-
-      <div class="map-legend">
-        <span>Less</span><span class="grad"></span><span>More</span>
-        <span class="map-note" style="margin-left:auto;">Color scale is relative, not a value judgment.</span>
-      </div>
-    </div>
-
-    <div class="map-callout" id="mapCallout">
-      <h4>Selected state</h4>
-      <p class="empty">Click a state on the map to see its total funding, award count, and recipient count for FY2026.</p>
-    </div>
+  <div class="map-panel" style="grid-template-columns:1fr;">
+    <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:32px; border-radius:2px; margin:0; text-align:center;">
+      State-by-state funding data isn't tracked yet — this map goes live once the USASpending.gov sync is built.
+    </p>
   </div>
 </section>
 
 <section class="section">
+  <!-- Requires the `awards` table — not built yet. Showing an honest empty
+       state rather than fabricated award rows. -->
   <div class="section__head">
     <h2 class="section__title">Recently awarded</h2>
     <p class="section__note">A live stream of new awards as agencies report them.</p>
   </div>
   <div class="stream">
-    <div class="stream__row">
-      <span class="stream__time">8 min ago</span>
-      <span class="stream__agency">NIH</span>
-      <span class="stream__amt">$4,821,771</span>
-      <span class="stream__recipient">Regional cancer research center</span>
-      <span class="stream__program">Cancer biology research</span>
-    </div>
-    <div class="stream__row">
-      <span class="stream__time">23 min ago</span>
-      <span class="stream__agency">DOE</span>
-      <span class="stream__amt">$12,400,000</span>
-      <span class="stream__recipient">National renewable energy laboratory</span>
-      <span class="stream__program">Advanced battery research</span>
-    </div>
-    <div class="stream__row">
-      <span class="stream__time">41 min ago</span>
-      <span class="stream__agency">USDA</span>
-      <span class="stream__amt">$2,147,500</span>
-      <span class="stream__recipient">County government, rural district</span>
-      <span class="stream__program">Rural development</span>
-    </div>
-    <div class="stream__row">
-      <span class="stream__time">1 hr ago</span>
-      <span class="stream__agency">NSF</span>
-      <span class="stream__amt">$1,680,300</span>
-      <span class="stream__recipient">State university system</span>
-      <span class="stream__program">Materials science</span>
-    </div>
-    <div class="stream__foot"><a href="/awards">View all awards →</a></div>
+    <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; padding:24px 20px; margin:0;">
+      Award data isn't tracked yet — this stream goes live once the USASpending.gov sync is built.
+    </p>
   </div>
 </section>
 
@@ -437,122 +448,10 @@ import Base from '../layouts/Base.astro';
 </style>
 
 <script>
-  const STATES = [
-    {a:'WA',n:'Washington',x:11,y:10,total:.55,pc:.35,amtT:'$3.1B',amtP:'$412 per capita',aw:'5,210',rc:'812'},
-    {a:'OR',n:'Oregon',x:9,y:20,total:.35,pc:.30,amtT:'$1.8B',amtP:'$430 per capita',aw:'2,900',rc:'540'},
-    {a:'CA',n:'California',x:6,y:36,total:.95,pc:.40,amtT:'$18.2B',amtP:'$465 per capita',aw:'41,200',rc:'6,150'},
-    {a:'NV',n:'Nevada',x:13,y:32,total:.25,pc:.28,amtT:'$0.9B',amtP:'$300 per capita',aw:'1,050',rc:'210'},
-    {a:'ID',n:'Idaho',x:17,y:17,total:.18,pc:.32,amtT:'$0.6B',amtP:'$330 per capita',aw:'900',rc:'180'},
-    {a:'MT',n:'Montana',x:22,y:9,total:.15,pc:.42,amtT:'$0.5B',amtP:'$480 per capita',aw:'700',rc:'140'},
-    {a:'WY',n:'Wyoming',x:23,y:21,total:.10,pc:.55,amtT:'$0.3B',amtP:'$520 per capita',aw:'400',rc:'90'},
-    {a:'UT',n:'Utah',x:17,y:30,total:.28,pc:.34,amtT:'$1.0B',amtP:'$300 per capita',aw:'1,600',rc:'300'},
-    {a:'AZ',n:'Arizona',x:15,y:44,total:.42,pc:.30,amtT:'$2.6B',amtP:'$350 per capita',aw:'4,100',rc:'760'},
-    {a:'CO',n:'Colorado',x:25,y:29,total:.40,pc:.38,amtT:'$2.4B',amtP:'$410 per capita',aw:'3,700',rc:'690'},
-    {a:'NM',n:'New Mexico',x:23,y:44,total:.30,pc:.62,amtT:'$1.6B',amtP:'$760 per capita',aw:'1,900',rc:'330'},
-    {a:'ND',n:'North Dakota',x:33,y:9,total:.12,pc:.50,amtT:'$0.4B',amtP:'$520 per capita',aw:'500',rc:'90'},
-    {a:'SD',n:'South Dakota',x:33,y:18,total:.12,pc:.45,amtT:'$0.4B',amtP:'$450 per capita',aw:'480',rc:'85'},
-    {a:'NE',n:'Nebraska',x:35,y:26,total:.18,pc:.38,amtT:'$0.7B',amtP:'$360 per capita',aw:'1,000',rc:'190'},
-    {a:'KS',n:'Kansas',x:37,y:33,total:.20,pc:.36,amtT:'$0.9B',amtP:'$310 per capita',aw:'1,300',rc:'240'},
-    {a:'OK',n:'Oklahoma',x:39,y:41,total:.24,pc:.34,amtT:'$1.2B',amtP:'$300 per capita',aw:'1,900',rc:'330'},
-    {a:'TX',n:'Texas',x:35,y:53,total:.85,pc:.32,amtT:'$14.8B',amtP:'$500 per capita',aw:'20,300',rc:'3,900'},
-    {a:'MN',n:'Minnesota',x:43,y:11,total:.35,pc:.38,amtT:'$2.0B',amtP:'$350 per capita',aw:'2,800',rc:'520'},
-    {a:'IA',n:'Iowa',x:45,y:21,total:.20,pc:.32,amtT:'$0.9B',amtP:'$280 per capita',aw:'1,300',rc:'230'},
-    {a:'MO',n:'Missouri',x:47,y:31,total:.32,pc:.34,amtT:'$1.9B',amtP:'$310 per capita',aw:'2,700',rc:'500'},
-    {a:'AR',n:'Arkansas',x:47,y:41,total:.18,pc:.30,amtT:'$0.8B',amtP:'$270 per capita',aw:'1,200',rc:'220'},
-    {a:'LA',n:'Louisiana',x:45,y:51,total:.28,pc:.35,amtT:'$1.6B',amtP:'$350 per capita',aw:'2,000',rc:'370'},
-    {a:'WI',n:'Wisconsin',x:51,y:13,total:.28,pc:.30,amtT:'$1.5B',amtP:'$260 per capita',aw:'2,200',rc:'410'},
-    {a:'IL',n:'Illinois',x:53,y:23,total:.55,pc:.32,amtT:'$5.2B',amtP:'$410 per capita',aw:'7,600',rc:'1,400'},
-    {a:'MS',n:'Mississippi',x:51,y:46,total:.16,pc:.30,amtT:'$0.6B',amtP:'$210 per capita',aw:'900',rc:'160'},
-    {a:'MI',n:'Michigan',x:57,y:11,total:.42,pc:.33,amtT:'$3.5B',amtP:'$350 per capita',aw:'5,400',rc:'1,010'},
-    {a:'IN',n:'Indiana',x:57,y:23,total:.28,pc:.28,amtT:'$1.6B',amtP:'$240 per capita',aw:'2,500',rc:'470'},
-    {a:'KY',n:'Kentucky',x:57,y:31,total:.24,pc:.29,amtT:'$1.2B',amtP:'$270 per capita',aw:'1,900',rc:'350'},
-    {a:'TN',n:'Tennessee',x:55,y:36,total:.30,pc:.28,amtT:'$1.6B',amtP:'$240 per capita',aw:'2,600',rc:'480'},
-    {a:'AL',n:'Alabama',x:57,y:43,total:.24,pc:.28,amtT:'$1.1B',amtP:'$220 per capita',aw:'1,900',rc:'350'},
-    {a:'OH',n:'Ohio',x:63,y:21,total:.48,pc:.32,amtT:'$3.9B',amtP:'$335 per capita',aw:'6,200',rc:'1,150'},
-    {a:'WV',n:'West Virginia',x:65,y:27,total:.14,pc:.35,amtT:'$0.4B',amtP:'$220 per capita',aw:'700',rc:'130'},
-    {a:'GA',n:'Georgia',x:63,y:45,total:.42,pc:.28,amtT:'$3.2B',amtP:'$300 per capita',aw:'5,100',rc:'950'},
-    {a:'FL',n:'Florida',x:65,y:59,total:.60,pc:.25,amtT:'$6.1B',amtP:'$285 per capita',aw:'9,900',rc:'1,830'},
-    {a:'SC',n:'South Carolina',x:67,y:39,total:.22,pc:.27,amtT:'$1.0B',amtP:'$195 per capita',aw:'1,700',rc:'310'},
-    {a:'NC',n:'North Carolina',x:69,y:33,total:.40,pc:.30,amtT:'$2.6B',amtP:'$250 per capita',aw:'4,300',rc:'800'},
-    {a:'VA',n:'Virginia',x:69,y:27,total:.55,pc:.60,amtT:'$5.6B',amtP:'$650 per capita',aw:'6,900',rc:'1,280'},
-    {a:'PA',n:'Pennsylvania',x:71,y:19,total:.48,pc:.34,amtT:'$4.3B',amtP:'$335 per capita',aw:'6,600',rc:'1,220'},
-    {a:'NY',n:'New York',x:73,y:11,total:.60,pc:.35,amtT:'$6.4B',amtP:'$330 per capita',aw:'9,500',rc:'1,760'},
-    {a:'NJ',n:'New Jersey',x:77,y:19,total:.36,pc:.36,amtT:'$2.9B',amtP:'$310 per capita',aw:'4,300',rc:'800'},
-    {a:'MD',n:'Maryland',x:73,y:23,total:.55,pc:.72,amtT:'$4.9B',amtP:'$810 per capita',aw:'6,000',rc:'1,110'},
-    {a:'DE',n:'Delaware',x:75,y:21,total:.10,pc:.32,amtT:'$0.2B',amtP:'$200 per capita',aw:'300',rc:'55'},
-    {a:'CT',n:'Connecticut',x:79,y:15,total:.24,pc:.35,amtT:'$1.0B',amtP:'$280 per capita',aw:'1,500',rc:'280'},
-    {a:'RI',n:'Rhode Island',x:81,y:14,total:.10,pc:.30,amtT:'$0.3B',amtP:'$260 per capita',aw:'400',rc:'75'},
-    {a:'MA',n:'Massachusetts',x:81,y:11,total:.38,pc:.55,amtT:'$3.0B',amtP:'$430 per capita',aw:'4,300',rc:'800'},
-    {a:'VT',n:'Vermont',x:79,y:7,total:.08,pc:.30,amtT:'$0.15B',amtP:'$240 per capita',aw:'250',rc:'45'},
-    {a:'NH',n:'New Hampshire',x:81,y:8,total:.10,pc:.30,amtT:'$0.2B',amtP:'$150 per capita',aw:'350',rc:'65'},
-    {a:'ME',n:'Maine',x:85,y:5,total:.10,pc:.28,amtT:'$0.25B',amtP:'$185 per capita',aw:'400',rc:'75'}
-  ];
-  const INSET = [
-    {a:'AK',n:'Alaska',total:.12,pc:.40,amtT:'$0.4B',amtP:'$550 per capita',aw:'500',rc:'90'},
-    {a:'HI',n:'Hawaii',total:.12,pc:.38,amtT:'$0.4B',amtP:'$280 per capita',aw:'500',rc:'90'}
-  ];
-
-  let currentMetric = 'total';
-
-  function colorFor(v: number){
-    const alpha = 0.08 + v * 0.82;
-    return `rgba(79,156,130,${alpha.toFixed(2)})`;
+  // "Data as of" date — rendered client-side to avoid caching a stale
+  // build-time date on a now server-rendered page.
+  const asof = document.getElementById('asofDate');
+  if (asof) {
+    asof.textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
-
-  function renderMap(){
-    const map = document.getElementById('usmap');
-    if(!map) return;
-    map.innerHTML = '';
-    STATES.forEach((s) => {
-      const el = document.createElement('div');
-      el.className = 'usmap__dot';
-      el.style.left = s.x + '%';
-      el.style.top = s.y + '%';
-      el.style.background = colorFor(currentMetric === 'total' ? s.total : s.pc);
-      el.textContent = s.a;
-      el.title = s.n;
-      el.onclick = () => selectState(s, el);
-      map.appendChild(el);
-    });
-    const inset = document.createElement('div');
-    inset.className = 'usmap__inset';
-    INSET.forEach((s) => {
-      const el = document.createElement('div');
-      el.className = 'usmap__dot';
-      el.style.background = colorFor(currentMetric === 'total' ? s.total : s.pc);
-      el.textContent = s.a;
-      el.title = s.n;
-      el.onclick = () => selectState(s, el);
-      inset.appendChild(el);
-    });
-    map.appendChild(inset);
-  }
-
-  function selectState(s: any, el: HTMLElement){
-    document.querySelectorAll('.usmap__dot').forEach((d) => d.classList.remove('selected'));
-    el.classList.add('selected');
-    const amt = currentMetric === 'total' ? s.amtT : s.amtP;
-    const callout = document.getElementById('mapCallout');
-    if(!callout) return;
-    callout.innerHTML =
-      '<h4>Selected state</h4>' +
-      '<div class="place">' + s.n + '</div>' +
-      '<div class="stat-line"><span>' + (currentMetric === 'total' ? 'Awarded, FY2026' : 'Per capita, FY2026') + '</span><span>' + amt + '</span></div>' +
-      '<div class="stat-line"><span>Awards</span><span>' + s.aw + '</span></div>' +
-      '<div class="stat-line"><span>Recipients</span><span>' + s.rc + '</span></div>' +
-      '<a href="#" class="view-link">Explore ' + s.n + ' →</a>';
-  }
-
-  function setMetric(metric: string){
-    currentMetric = metric;
-    document.querySelectorAll('.metric-toggle button').forEach((b) => {
-      b.classList.toggle('active', (b as HTMLElement).dataset.metric === metric);
-    });
-    renderMap();
-  }
-
-  document.getElementById('metricTotal')?.addEventListener('click', () => setMetric('total'));
-  document.getElementById('metricPerCapita')?.addEventListener('click', () => setMetric('percapita'));
-
-  renderMap();
 </script>
