@@ -67,7 +67,7 @@ async function fetchNihOpportunities() {
     rows: 50,
     keyword: '',
     oppStatuses: 'forecasted|posted',
-    agencies: '',
+    agencies: 'HHS-NIH11',
   };
 
   const response = await fetch(GRANTS_GOV_SEARCH_URL, {
