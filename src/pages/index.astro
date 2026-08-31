@@ -5,9 +5,6 @@ import Base from '../layouts/Base.astro';
 // so it can query the live D1 database via the Cloudflare adapter's runtime
 // bindings, instead of being frozen at build time with hardcoded numbers.
 
-const env = (Astro.locals as any).runtime.env;
-const db = env.DB;
-
 let openOpportunitiesCount: number | null = null;
 let agenciesTrackedCount: number | null = null;
 let newestOpportunity: {
@@ -21,6 +18,11 @@ let newestOpportunity: {
 } | null = null;
 
 try {
+  const db = (Astro.locals as any)?.runtime?.env?.DB;
+  if (!db) {
+    throw new Error('D1 binding (env.DB) not found on Astro.locals.runtime.env');
+  }
+
   const openCountResult = await db
     .prepare(`SELECT COUNT(*) as count FROM opportunities WHERE status IN ('forecasted', 'posted')`)
     .first();
@@ -43,8 +45,9 @@ try {
     `)
     .first();
 } catch (err) {
-  // If D1 is unreachable for any reason, fall back to nulls rather than
-  // crashing the homepage — the template below handles null gracefully.
+  // If D1 is unreachable, or the runtime binding isn't where we expect it,
+  // fall back to nulls rather than crashing the homepage with a 500 — the
+  // template below handles null gracefully everywhere.
   console.error('Homepage D1 query failed:', err);
 }
 
