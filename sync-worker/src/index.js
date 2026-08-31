@@ -83,7 +83,19 @@ async function fetchNihOpportunities() {
   if (!Array.isArray(hits)) {
     throw new Error('Unexpected Grants.gov response shape: no data.oppHits array found');
   }
-  return hits.map(parseOpportunity);
+
+  const opportunities = hits.map(parseOpportunity);
+
+  // DEBUG: raw diagnostics so the manual trigger can show us what Grants.gov
+  // actually returned, since parseOpportunity()'s field-name guesses are
+  // untested against a live response. Remove once parsing is confirmed correct.
+  const debug = {
+    hitsFound: hits.length,
+    firstRawHit: hits.length > 0 ? hits[0] : null,
+    firstParsedOpportunityNumber: opportunities.length > 0 ? opportunities[0].opportunity_number : null,
+  };
+
+  return { opportunities, debug };
 }
 
 async function upsertOpportunity(db, nihAgencyId, opp) {
@@ -128,7 +140,7 @@ async function runSync(env) {
       throw new Error('NIH agency not found in agencies table — was seed.sql run?');
     }
 
-    const opportunities = await fetchNihOpportunities();
+    const { opportunities, debug } = await fetchNihOpportunities();
 
     let processed = 0;
     for (const opp of opportunities) {
@@ -141,7 +153,7 @@ async function runSync(env) {
       `UPDATE sync_runs SET status = 'success', finished_at = datetime('now'), records_processed = ? WHERE id = ?`
     ).bind(processed, runId).run();
 
-    return { success: true, processed };
+    return { success: true, processed, debug };
   } catch (err) {
     await db.prepare(
       `UPDATE sync_runs SET status = 'failed', finished_at = datetime('now'), error_message = ? WHERE id = ?`
