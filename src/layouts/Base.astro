@@ -216,33 +216,6 @@ function truncate(text: string, max: number): string {
     font-weight:500;
   }
   nav a:hover{ color:var(--ink-text); }
-  .header__actions{ display:flex; align-items:center; gap:14px; }
-  .btn-ghost{
-    border:1px solid var(--paper-line);
-    background:transparent;
-    padding:8px 16px;
-    border-radius:2px;
-    font-size:13px;
-    font-weight:500;
-    cursor:pointer;
-    color:var(--ink-text);
-    font-family:inherit;
-  }
-  .btn-ghost:hover{ border-color:var(--ink-text); }
-  .btn-solid{
-    border:1px solid var(--ink);
-    background:var(--ink);
-    color:var(--paper);
-    padding:9px 18px;
-    border-radius:2px;
-    font-size:13px;
-    font-weight:600;
-    cursor:pointer;
-    font-family:inherit;
-  }
-  .btn-solid:hover{ background:var(--ink-soft); }
-  button:disabled{ opacity:0.45; cursor:not-allowed; }
-  button:disabled:hover{ border-color:inherit; background:inherit; }
 
   /* ---------- Footer ---------- */
   footer{
@@ -292,14 +265,7 @@ function truncate(text: string, max: number): string {
         <a href="/#record">Opportunities</a>
         <a href="/#lookup">Recipients</a>
         <a href="/#map">Map</a>
-        <a href="/#follow">Alerts</a>
       </nav>
-      <div class="header__actions">
-        <!-- No accounts/auth system exists yet — disabled rather than
-             implying login/signup works. -->
-        <button class="btn-ghost" disabled title="Not available yet — no accounts system built">Log in</button>
-        <button class="btn-solid" disabled title="Not available yet — no accounts system built">Create account</button>
-      </div>
     </div>
   </header>
 
