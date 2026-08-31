@@ -1,9 +1,13 @@
 ---
 import Base from '../layouts/Base.astro';
+import { env } from 'cloudflare:workers';
 
 // Removed `export const prerender = true` — this page now renders per-request
-// so it can query the live D1 database via the Cloudflare adapter's runtime
-// bindings, instead of being frozen at build time with hardcoded numbers.
+// so it can query the live D1 database via Cloudflare's runtime env,
+// instead of being frozen at build time with hardcoded numbers.
+//
+// Astro v6 removed `Astro.locals.runtime.env` — bindings are now accessed
+// via `import { env } from 'cloudflare:workers'` instead.
 
 let openOpportunitiesCount: number | null = null;
 let agenciesTrackedCount: number | null = null;
@@ -19,9 +23,9 @@ let newestOpportunity: {
 let debugError: string | null = null;
 
 try {
-  const db = (Astro.locals as any)?.runtime?.env?.DB;
+  const db = (env as any)?.DB;
   if (!db) {
-    throw new Error('D1 binding (env.DB) not found on Astro.locals.runtime.env');
+    throw new Error('D1 binding (env.DB) not found via cloudflare:workers env');
   }
 
   const openCountResult = await db
