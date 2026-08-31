@@ -88,24 +88,15 @@ async function fetchNihOpportunities() {
 
   const opportunities = hits.map(parseOpportunity);
 
-  // DEBUG: raw diagnostics so the manual trigger can show us what Grants.gov
-  // actually returned, since parseOpportunity()'s field-name guesses are
-  // untested against a live response. Remove once parsing is confirmed correct.
-  const debug = {
-    requestBodySent: requestBody,
+  // Lightweight summary for the manual-trigger response — enough to confirm
+  // a run behaved as expected without dumping Grants.gov's full facet
+  // payload (agencies/eligibilities/funding categories etc.) on every hit.
+  const summary = {
     hitsFound: hits.length,
-    firstRawHit: hits.length > 0 ? hits[0] : null,
-    firstParsedOpportunityNumber: opportunities.length > 0 ? opportunities[0].opportunity_number : null,
-    // Everything Grants.gov returned at the top level of `data`, minus the
-    // (possibly huge) oppHits array itself — this often includes a total
-    // record count and/or an error/status message even on a 200 response.
-    responseDataKeysExcludingHits: json?.data
-      ? Object.fromEntries(Object.entries(json.data).filter(([k]) => k !== 'oppHits'))
-      : null,
-    responseTopLevelKeys: json ? Object.keys(json) : null,
+    totalMatchingGrantsGov: json?.data?.hitCount ?? null,
   };
 
-  return { opportunities, debug };
+  return { opportunities, summary };
 }
 
 async function upsertOpportunity(db, nihAgencyId, opp) {
@@ -150,7 +141,7 @@ async function runSync(env) {
       throw new Error('NIH agency not found in agencies table — was seed.sql run?');
     }
 
-    const { opportunities, debug } = await fetchNihOpportunities();
+    const { opportunities, summary } = await fetchNihOpportunities();
 
     let processed = 0;
     for (const opp of opportunities) {
@@ -163,7 +154,7 @@ async function runSync(env) {
       `UPDATE sync_runs SET status = 'success', finished_at = datetime('now'), records_processed = ? WHERE id = ?`
     ).bind(processed, runId).run();
 
-    return { success: true, processed, debug };
+    return { success: true, processed, summary };
   } catch (err) {
     await db.prepare(
       `UPDATE sync_runs SET status = 'failed', finished_at = datetime('now'), error_message = ? WHERE id = ?`
