@@ -63,15 +63,17 @@ function parseOpportunity(hit) {
 }
 
 async function fetchNihOpportunities() {
+  const requestBody = {
+    rows: 50,
+    keyword: '',
+    oppStatuses: 'forecasted|posted',
+    agencies: 'HHS-NIH',
+  };
+
   const response = await fetch(GRANTS_GOV_SEARCH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      rows: 50,
-      keyword: '',
-      oppStatuses: 'forecasted|posted',
-      agencies: 'HHS-NIH',
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -90,9 +92,17 @@ async function fetchNihOpportunities() {
   // actually returned, since parseOpportunity()'s field-name guesses are
   // untested against a live response. Remove once parsing is confirmed correct.
   const debug = {
+    requestBodySent: requestBody,
     hitsFound: hits.length,
     firstRawHit: hits.length > 0 ? hits[0] : null,
     firstParsedOpportunityNumber: opportunities.length > 0 ? opportunities[0].opportunity_number : null,
+    // Everything Grants.gov returned at the top level of `data`, minus the
+    // (possibly huge) oppHits array itself — this often includes a total
+    // record count and/or an error/status message even on a 200 response.
+    responseDataKeysExcludingHits: json?.data
+      ? Object.fromEntries(Object.entries(json.data).filter(([k]) => k !== 'oppHits'))
+      : null,
+    responseTopLevelKeys: json ? Object.keys(json) : null,
   };
 
   return { opportunities, debug };
