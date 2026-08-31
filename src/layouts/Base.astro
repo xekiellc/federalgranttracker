@@ -1,4 +1,6 @@
 ---
+import { env } from 'cloudflare:workers';
+
 const {
   title = "Federal Grant Tracker — Follow the Federal Money",
   description = "Every open opportunity, every award, every recipient — pulled from Grants.gov and USASpending.gov and laid out so you can actually use it."
@@ -6,6 +8,36 @@ const {
 
 const ogImage = "https://federalgranttracker.com/og-image.png";
 const pageUrl = new URL(Astro.url.pathname, "https://federalgranttracker.com").toString();
+
+// Ticker now shows real recent opportunities from D1 instead of fabricated
+// award/posting data. There is no dollar amount to show — that data lives
+// in the `awards` table, sourced from USASpending.gov, which hasn't been
+// built yet — so items show title + agency + status only, never a $ figure.
+let tickerItems: { title: string; agency_name: string | null; status: string }[] = [];
+try {
+  const db = (env as any)?.DB;
+  if (db) {
+    const result = await db
+      .prepare(`
+        SELECT o.title, o.status, a.name as agency_name
+        FROM opportunities o
+        LEFT JOIN agencies a ON o.agency_id = a.id
+        WHERE o.status IN ('forecasted', 'posted')
+        ORDER BY o.posted_date DESC
+        LIMIT 10
+      `)
+      .all();
+    tickerItems = (result?.results as any[]) ?? [];
+  }
+} catch (err) {
+  // If D1 is unreachable, fall back to an empty ticker (handled in the
+  // template below) rather than crashing every page on this site.
+  console.error('Ticker D1 query failed:', err);
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + '…' : text;
+}
 ---
 <!DOCTYPE html>
 <html lang="en">
@@ -110,6 +142,12 @@ const pageUrl = new URL(Astro.url.pathname, "https://federalgranttracker.com").t
     padding:8px 0;
     will-change: transform;
   }
+  .ticker__empty{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    padding:8px 22px;
+    color:rgba(237,230,214,0.55);
+  }
   .ticker__item{
     font-family:'IBM Plex Mono', monospace;
     font-size:11px;
@@ -203,6 +241,8 @@ const pageUrl = new URL(Astro.url.pathname, "https://federalgranttracker.com").t
     font-family:inherit;
   }
   .btn-solid:hover{ background:var(--ink-soft); }
+  button:disabled{ opacity:0.45; cursor:not-allowed; }
+  button:disabled:hover{ border-color:inherit; background:inherit; }
 
   /* ---------- Footer ---------- */
   footer{
@@ -221,23 +261,23 @@ const pageUrl = new URL(Astro.url.pathname, "https://federalgranttracker.com").t
 </head>
 <body>
 
-  <div class="ticker" role="marquee" aria-label="Recent grant activity">
-    <div class="ticker__label"><span class="pulse"></span> LIVE FEDERAL MONEY</div>
+  <div class="ticker" role="marquee" aria-label="Recent grant opportunities">
+    <div class="ticker__label"><span class="pulse"></span> LIVE FROM GRANTS.GOV</div>
     <div class="ticker__viewport">
-      <div class="ticker__track">
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$9.1M</span> → Johns Hopkins University · HHS</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$75M</span> Clean Energy Research NOFO · DOE</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$4.7M</span> → Rural Broadband Expansion · USDA</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$12M</span> Quantum Computing NOFO · NSF</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$2.1M</span> → Materials Science Lab · NSF</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$30M</span> Wildfire Resilience NOFO · USDA</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$9.1M</span> → Johns Hopkins University · HHS</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$75M</span> Clean Energy Research NOFO · DOE</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$4.7M</span> → Rural Broadband Expansion · USDA</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$12M</span> Quantum Computing NOFO · NSF</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--awarded">AWARDED</span> <span class="ticker__amt">$2.1M</span> → Materials Science Lab · NSF</span>
-        <span class="ticker__item"><span class="ticker__flag ticker__flag--posted">POSTED</span> <span class="ticker__amt">$30M</span> Wildfire Resilience NOFO · USDA</span>
-      </div>
+      {tickerItems.length > 0 ? (
+        <div class="ticker__track">
+          {[...tickerItems, ...tickerItems].map((item) => (
+            <span class="ticker__item">
+              <span class={`ticker__flag ${item.status === 'posted' ? 'ticker__flag--posted' : 'ticker__flag--awarded'}`}>
+                {item.status === 'posted' ? 'OPEN' : 'FORECASTED'}
+              </span>
+              {truncate(item.title, 60)} · {item.agency_name ?? 'Agency unknown'}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div class="ticker__empty">No live opportunities tracked yet.</div>
+      )}
     </div>
   </div>
 
@@ -255,8 +295,10 @@ const pageUrl = new URL(Astro.url.pathname, "https://federalgranttracker.com").t
         <a href="/#follow">Alerts</a>
       </nav>
       <div class="header__actions">
-        <button class="btn-ghost">Log in</button>
-        <button class="btn-solid">Create account</button>
+        <!-- No accounts/auth system exists yet — disabled rather than
+             implying login/signup works. -->
+        <button class="btn-ghost" disabled title="Not available yet — no accounts system built">Log in</button>
+        <button class="btn-solid" disabled title="Not available yet — no accounts system built">Create account</button>
       </div>
     </div>
   </header>
