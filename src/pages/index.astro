@@ -118,7 +118,6 @@ function formatDate(iso: string | null): string {
   {newestOpportunity ? (
     <div class="record">
       <span class="stamp">{lifecycleStage === 'open' ? 'Open' : 'Forecasted'}</span>
-      <button class="record__follow" style="position:absolute; top:26px; right:118px;" disabled title="Not available yet — no accounts system built">+ Follow</button>
       <div class="record__main">
         <p class="record__agency">{newestOpportunity.agency_name ?? 'Agency unknown'}</p>
         <h3 class="record__title">{newestOpportunity.title}</h3>
@@ -199,24 +198,6 @@ function formatDate(iso: string | null): string {
     <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; padding:24px 20px; margin:0;">
       Award data isn't tracked yet — this stream goes live once the USASpending.gov sync is built.
     </p>
-  </div>
-</section>
-
-<section class="follow" id="follow">
-  <div class="follow__inner">
-    <div>
-      <h2 class="follow__title">Follow what matters. We'll tell you when it moves.</h2>
-      <p class="follow__copy">Set an alert on any recipient, agency, topic, or opportunity type — get an email the moment something changes.</p>
-      <!-- Not built yet: no accounts/auth system exists, so this can't
-           actually create an alert. Disabled rather than implying it works. -->
-      <button class="btn-solid" disabled title="Not available yet — no accounts system built">Create an alert →</button>
-      <p style="font-size:12.5px; color:rgba(237,230,214,0.6); margin-top:10px;">Alerts aren't available yet — this requires an accounts system that hasn't been built.</p>
-    </div>
-    <div>
-      <div class="alert-card" style="opacity:0.5;"><span class="bell"></span> Follow NSF grants on clean energy research</div>
-      <div class="alert-card" style="opacity:0.5;"><span class="bell"></span> Alert me when a new recipient is added to this program</div>
-      <div class="alert-card" style="opacity:0.5;"><span class="bell"></span> New opportunities for small business (SBIR/STTR)</div>
-    </div>
   </div>
 </section>
 
@@ -322,11 +303,6 @@ function formatDate(iso: string | null): string {
   .record__lifecycle .arrow{ opacity:0.4; }
   .record__lifecycle .stage-sep{ opacity:0.4; margin:0 2px; }
   .record__lifecycle .stage-awards{ color:var(--ink-muted); text-transform:none; letter-spacing:0; }
-  .record__follow{
-    background:transparent; border:1px solid var(--ink); color:var(--ink); font-family:'IBM Plex Mono', monospace;
-    font-size:11px; font-weight:600; letter-spacing:0.04em; padding:6px 12px; border-radius:2px; cursor:pointer;
-  }
-  .record__follow:hover{ background:var(--ink); color:var(--paper); }
   .record__list{ list-style:none; padding:0; margin:0; font-size:13.5px; }
   .record__list li{ padding:9px 0; border-top:1px solid var(--paper-line); display:flex; justify-content:space-between; gap:10px; }
   .record__list li:first-child{ border-top:none; }
@@ -427,18 +403,6 @@ function formatDate(iso: string | null): string {
   .stream__foot a{ text-decoration:none; }
   .stream__foot a:hover{ text-decoration:underline; }
 
-  .follow{ background:var(--ink); color:var(--paper); }
-  .follow__inner{ max-width:1180px; margin:0 auto; padding:60px 28px; display:grid; grid-template-columns:1fr 1fr; gap:48px; }
-  .follow__title{ font-family:'Fraunces', serif; font-weight:600; font-size:30px; margin:0 0 16px; max-width:14ch; }
-  .follow__copy{ color:rgba(237,230,214,0.7); font-size:15px; line-height:1.6; max-width:40ch; margin-bottom:24px; }
-  .alert-card{
-    border:1px solid var(--paper-hairline-on-ink); padding:15px 18px; display:flex; align-items:center;
-    gap:12px; margin-bottom:11px; font-size:13.5px; font-family:'IBM Plex Mono', monospace; color:rgba(237,230,214,0.9);
-  }
-  .bell{ flex:none; width:8px; height:8px; border-radius:50%; background:var(--verdigris); }
-  .follow .btn-solid{ background:var(--verdigris); border-color:var(--verdigris); color:var(--ink); margin-top:8px; }
-  .follow .btn-solid:hover{ background:#5FAF93; }
-
   @media (max-width: 860px){
     .ledger__row{ grid-template-columns:1fr; }
     .ledger__cell{ border-left:none; border-top:1px solid var(--paper-line); padding-left:0; }
@@ -446,9 +410,6 @@ function formatDate(iso: string | null): string {
     .ledger__asof{ padding:12px 0 0; }
     .record{ grid-template-columns:1fr; }
     .record__side{ border-left:none; border-top:1px solid var(--paper-line); padding-left:0; padding-top:18px; }
-    .follow__inner{ grid-template-columns:1fr; }
-    .stamp{ position:static; display:inline-block; margin-bottom:14px; transform:rotate(-4deg); }
-    .record__follow{ position:static !important; display:inline-block; margin:0 0 14px 10px; }
     .map-panel{ grid-template-columns:1fr; }
     .usmap{ padding-bottom:70%; }
     .stream__row{ grid-template-columns:1fr; gap:4px; }
