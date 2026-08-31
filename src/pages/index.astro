@@ -16,6 +16,7 @@ let newestOpportunity: {
   slug: string;
   agency_name: string | null;
 } | null = null;
+let debugError: string | null = null;
 
 try {
   const db = (Astro.locals as any)?.runtime?.env?.DB;
@@ -49,6 +50,7 @@ try {
   // fall back to nulls rather than crashing the homepage with a 500 — the
   // template below handles null gracefully everywhere.
   console.error('Homepage D1 query failed:', err);
+  debugError = err instanceof Error ? err.message : String(err);
 }
 
 // opportunities.status uses forecasted/posted/closed/archived (see schema.sql);
@@ -95,6 +97,11 @@ function formatDate(iso: string | null): string {
       <div class="ledger__asof mono">Data as of <span id="asofDate"></span> · <a href="/about-data" class="ledger__asof-link">about this data →</a></div>
     </div>
   </div>
+  {debugError && (
+    <p style="font-family:'IBM Plex Mono', monospace; font-size:12px; color:#b23; background:#fee; border:1px solid #b23; padding:12px 16px; margin:16px 0 0; border-radius:2px;">
+      TEMP DEBUG — D1 query failed: {debugError}
+    </p>
+  )}
 </section>
 
 <div class="explore" id="explore">
