@@ -73,8 +73,8 @@ function formatDate(iso: string | null): string {
   <h1 class="hero__headline">Follow the <em>federal money.</em></h1>
   <p class="hero__sub">Every open opportunity, every award, every recipient — pulled straight from Grants.gov and USASpending.gov and laid out so you can actually use it.</p>
 
-  <form class="search-line" role="search" onsubmit="return false;">
-    <input type="text" placeholder="Search a grant, recipient, agency, program, or place…" aria-label="Search a grant, recipient, agency, program, or place">
+  <form class="search-line" role="search" method="get" action="/opportunities">
+    <input type="text" name="q" placeholder="Search a grant, recipient, agency, program, or place…" aria-label="Search a grant, recipient, agency, program, or place">
     <button type="submit">Search</button>
   </form>
 
@@ -104,11 +104,7 @@ function formatDate(iso: string | null): string {
   <p class="explore__label">Explore by</p>
   <div class="chip-row">
     <a class="chip" href="/agencies">Agencies</a>
-    <a class="chip" href="/recipients">Recipients</a>
-    <a class="chip" href="/states">States</a>
-    <a class="chip" href="/programs">Programs</a>
-    <a class="chip" href="/topics">Topics</a>
-    <a class="chip" href="/districts">Congressional districts</a>
+    <a class="chip" href="/opportunities">All opportunities</a>
   </div>
 </div>
 
