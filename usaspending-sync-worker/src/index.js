@@ -9,6 +9,16 @@
 // Grants.gov sync) so a fix, if needed, is fast rather than another long
 // back-and-forth.
 //
+// UPDATE: the first 3 scheduled runs all failed with HTTP 525 (SSL handshake
+// failure) before ever reaching our request logic — this points to a
+// TLS/WAF-layer issue between Cloudflare Workers' network and USASpending's
+// API, not a code bug. Added explicit Accept/User-Agent headers below since
+// some government APIs reject bare/default requests at their WAF layer in a
+// way that can surface as this kind of error. If this doesn't resolve it,
+// the likely next step is moving this sync off Workers entirely (e.g. to a
+// GitHub Actions scheduled workflow, which runs from different network
+// infrastructure).
+//
 // This worker runs on a schedule (see wrangler.toml) and also exposes a
 // manual trigger via GET request, gated by a shared secret, so it can be
 // debugged without waiting for the next scheduled run.
@@ -26,6 +36,9 @@ function fiscalYearRange(fy) {
   return { start: `${fy - 1}-10-01`, end: `${fy}-09-30` };
 }
 
+// Same derivation used for award records that don't come from our own
+// fiscal-year filter (defensive — in practice every result here is inside
+// the queried FY already).
 function fiscalYearFromDate(iso) {
   const d = new Date(iso + 'T00:00:00Z');
   const month = d.getUTCMonth() + 1;
@@ -91,7 +104,11 @@ async function fetchNihAwards() {
 
   const response = await fetch(USASPENDING_SEARCH_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
+    },
     body: JSON.stringify(requestBody),
   });
 
