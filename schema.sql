@@ -79,6 +79,12 @@ CREATE TABLE awards (
   fiscal_year INTEGER NOT NULL,
   award_date TEXT NOT NULL,
   cfda_number TEXT,
+  funding_opportunity_number TEXT,    -- reported by the awarding agency in some FABS submissions;
+                                       -- when present, this is the strongest signal for matching
+                                       -- an award back to its Grants.gov opportunity
+  match_confidence TEXT,              -- 'exact' (matched on funding_opportunity_number) |
+                                       -- 'cfda_inferred' (matched on cfda_number + agency + timing) |
+                                       -- NULL (no opportunity match found)
   description TEXT,
   place_of_performance_state_id INTEGER,  -- where the funded work happens (may differ from recipient's address)
   last_synced_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -106,9 +112,11 @@ CREATE TABLE sync_runs (
 CREATE INDEX idx_opportunities_agency ON opportunities(agency_id);
 CREATE INDEX idx_opportunities_status ON opportunities(status);
 CREATE INDEX idx_opportunities_posted_date ON opportunities(posted_date);
+CREATE INDEX idx_opportunities_cfda_number ON opportunities(cfda_number);
 CREATE INDEX idx_awards_opportunity ON awards(opportunity_id);
 CREATE INDEX idx_awards_agency ON awards(agency_id);
 CREATE INDEX idx_awards_recipient ON awards(recipient_id);
 CREATE INDEX idx_awards_award_date ON awards(award_date);
 CREATE INDEX idx_awards_state ON awards(place_of_performance_state_id);
+CREATE INDEX idx_awards_cfda_number ON awards(cfda_number);
 CREATE INDEX idx_recipients_state ON recipients(state_id);
