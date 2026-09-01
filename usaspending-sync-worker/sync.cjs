@@ -21,6 +21,19 @@
 // truncation limit, since merging distinct real organizations under a
 // truncation-collided slug would now be a much likelier silent risk at
 // this larger scale.
+//
+// UPDATE 2: now requests CFDA number and place-of-performance state on
+// every award. Both columns exist in the schema, but after this ran live,
+// awards.cfda_number came back NULL on all 4,995 synced rows — meaning
+// either 'CFDA Number' isn't the literal field name USASpending's API
+// expects, or it's valid but shaped differently than a flat string
+// (USASpending renamed CFDA to "Assistance Listings" in 2022, and some
+// endpoints return that as an array of objects, not one string). Rather
+// than guess a second field name blind, this update adds a one-time debug
+// log of the raw first result object on page 1, so the next run's GitHub
+// Actions log shows the actual field names USASpending returns. Once we
+// see that output, parseAward() gets corrected to read the real field —
+// this debug line comes back out once that's confirmed.
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -66,6 +79,8 @@ function parseAward(result) {
   const amountRaw = result['Award Amount'];
   const amount = typeof amountRaw === 'number' ? Math.round(amountRaw) : parseInt(amountRaw, 10);
   const startDate = result['Start Date'] || null; // "YYYY-MM-DD"
+  const cfdaNumber = result['CFDA Number'] || null;
+  const placeOfPerformanceStateCode = result['Place of Performance State Code'] || null;
 
   return {
     award_id: awardId,
@@ -74,6 +89,8 @@ function parseAward(result) {
     amount: Number.isFinite(amount) ? amount : null,
     award_date: startDate,
     fiscal_year: startDate ? fiscalYearFromDate(startDate) : currentFiscalYear(),
+    cfda_number: cfdaNumber,
+    place_of_performance_state_code: placeOfPerformanceStateCode,
   };
 }
 
@@ -91,6 +108,7 @@ async function fetchNihAwards() {
 
   let allResults = [];
   let page = 1;
+  let loggedDebugSample = false;
 
   while (page <= MAX_PAGES) {
     const requestBody = {
@@ -108,6 +126,8 @@ async function fetchNihAwards() {
         'Start Date',
         'End Date',
         'Award Type',
+        'CFDA Number',
+        'Place of Performance State Code',
         'generated_internal_id',
       ],
       page,
@@ -137,6 +157,16 @@ async function fetchNihAwards() {
       throw new Error(`Unexpected USASpending response shape on page ${page}: no results array found`);
     }
 
+    // TEMPORARY DEBUG: log the raw shape of the very first result so we can
+    // see USASpending's actual field names for CFDA / place-of-performance
+    // in the GitHub Actions log. Remove this block once cfda_number and
+    // place_of_performance_state_code are confirmed populating correctly.
+    if (!loggedDebugSample && results.length > 0) {
+      console.log('DEBUG — raw first result object from USASpending:');
+      console.log(JSON.stringify(results[0], null, 2));
+      loggedDebugSample = true;
+    }
+
     allResults = allResults.concat(results);
     console.log(`Page ${page}: ${results.length} results (running total: ${allResults.length})`);
 
@@ -148,8 +178,12 @@ async function fetchNihAwards() {
 }
 
 // Builds one batched SQL file: an upsert for the recipient, then an upsert
-// for the award (using subqueries to resolve agency_id/recipient_id, so no
-// separate round-trip lookups are needed before writing).
+// for the award (using subqueries to resolve agency_id/recipient_id/
+// place_of_performance_state_id, so no separate round-trip lookups are
+// needed before writing). opportunity_id and match_confidence are
+// deliberately NOT set here — that's the separate matching job's job,
+// run after this sync completes, so a bug in matching logic can never
+// corrupt the award data itself.
 function buildSql(awards) {
   const statements = [];
 
@@ -160,8 +194,12 @@ function buildSql(awards) {
       `INSERT INTO recipients (slug, name) VALUES (${sqlEscape(award.recipient_slug)}, ${sqlEscape(award.recipient_name)}) ON CONFLICT(slug) DO NOTHING;`
     );
 
+    const stateIdExpr = award.place_of_performance_state_code
+      ? `(SELECT id FROM states WHERE code = ${sqlEscape(award.place_of_performance_state_code)})`
+      : 'NULL';
+
     statements.push(`
-      INSERT INTO awards (award_id, agency_id, recipient_id, amount, fiscal_year, award_date, last_synced_at)
+      INSERT INTO awards (award_id, agency_id, recipient_id, amount, fiscal_year, award_date, cfda_number, place_of_performance_state_id, last_synced_at)
       VALUES (
         ${sqlEscape(award.award_id)},
         (SELECT id FROM agencies WHERE code = 'NIH'),
@@ -169,12 +207,16 @@ function buildSql(awards) {
         ${award.amount},
         ${award.fiscal_year},
         ${sqlEscape(award.award_date)},
+        ${sqlEscape(award.cfda_number)},
+        ${stateIdExpr},
         datetime('now')
       )
       ON CONFLICT(award_id) DO UPDATE SET
         amount = excluded.amount,
         fiscal_year = excluded.fiscal_year,
         award_date = excluded.award_date,
+        cfda_number = excluded.cfda_number,
+        place_of_performance_state_id = excluded.place_of_performance_state_id,
         last_synced_at = excluded.last_synced_at;
     `);
   }
