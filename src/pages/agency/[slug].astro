@@ -1,0 +1,131 @@
+---
+import Base from '../../layouts/Base.astro';
+import { env } from 'cloudflare:workers';
+
+const { slug } = Astro.params;
+
+let agency: { name: string; code: string } | null = null;
+let opportunities: {
+  slug: string;
+  title: string;
+  status: string;
+  posted_date: string | null;
+  close_date: string | null;
+}[] = [];
+
+try {
+  const db = (env as any)?.DB;
+  if (db && slug) {
+    agency = await db
+      .prepare(`SELECT name, code FROM agencies WHERE slug = ?`)
+      .bind(slug)
+      .first();
+
+    if (agency) {
+      const result = await db
+        .prepare(`
+          SELECT o.slug, o.title, o.status, o.posted_date, o.close_date
+          FROM opportunities o
+          JOIN agencies a ON o.agency_id = a.id
+          WHERE a.slug = ?
+          ORDER BY o.posted_date DESC
+        `)
+        .bind(slug)
+        .all();
+      opportunities = (result?.results as any[]) ?? [];
+    }
+  }
+} catch (err) {
+  console.error('Agency page D1 query failed:', err);
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+const pageTitle = agency
+  ? `${agency.name} — Federal Grant Tracker`
+  : 'Agency not found — Federal Grant Tracker';
+---
+<Base title={pageTitle}>
+
+<div class="wrap">
+  {agency ? (
+    <>
+      <p class="breadcrumb"><a href="/">Home</a> / Agencies / {agency.code}</p>
+      <h1 class="title">{agency.name}</h1>
+      <p class="sub">{opportunities.length} tracked {opportunities.length === 1 ? 'opportunity' : 'opportunities'} from Grants.gov</p>
+
+      <!-- Award/funding totals require the USASpending sync, not built yet —
+           intentionally not shown here rather than fabricated. -->
+
+      {opportunities.length > 0 ? (
+        <div class="list">
+          {opportunities.map((opp) => (
+            <a class="row" href={`/opportunity/${opp.slug}`}>
+              <span class={`flag flag--${opp.status}`}>{opp.status}</span>
+              <span class="row__title">{opp.title}</span>
+              <span class="row__date">Posted {formatDate(opp.posted_date)}</span>
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p class="empty">No opportunities currently tracked for this agency.</p>
+      )}
+    </>
+  ) : (
+    <div class="not-found">
+      <p class="breadcrumb"><a href="/">Home</a></p>
+      <h1>Agency not found</h1>
+      <p>We don't track an agency at this address.</p>
+      <a href="/" class="back-link">← Back to homepage</a>
+    </div>
+  )}
+</div>
+
+</Base>
+
+<style>
+  .wrap{ max-width:900px; margin:0 auto; padding:34px 28px 60px; }
+  .breadcrumb{ font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--ink-muted); margin:0 0 20px; }
+  .breadcrumb a{ text-decoration:none; color:var(--ink-muted); }
+  .breadcrumb a:hover{ color:var(--verdigris-deep); }
+
+  .title{ font-family:'Fraunces', serif; font-size:32px; font-weight:600; margin:0 0 8px; }
+  .sub{ font-size:14px; color:var(--ink-muted); margin-bottom:28px; }
+
+  .list{ border:1px solid var(--paper-line); background:var(--paper-soft); }
+  .row{
+    display:grid; grid-template-columns:110px 1fr 160px; gap:16px; align-items:center;
+    padding:16px 20px; border-top:1px solid var(--paper-line); text-decoration:none; color:inherit;
+  }
+  .row:first-child{ border-top:none; }
+  .row:hover{ background:var(--paper); }
+  .row__title{ font-size:14.5px; color:var(--ink-text); }
+  .row__date{ font-size:12px; color:var(--ink-muted); font-family:'IBM Plex Mono', monospace; text-align:right; }
+
+  .flag{
+    font-family:'IBM Plex Mono', monospace; font-size:10px; font-weight:600; letter-spacing:0.06em;
+    text-transform:uppercase; padding:4px 8px; border-radius:2px; text-align:center; width:fit-content;
+  }
+  .flag--forecasted{ background:rgba(180,137,46,0.18); color:var(--gold); }
+  .flag--posted{ background:rgba(79,156,130,0.18); color:var(--verdigris-deep); }
+  .flag--closed{ background:rgba(91,107,112,0.18); color:var(--ink-muted); }
+  .flag--archived{ background:rgba(91,107,112,0.12); color:var(--ink-muted); }
+
+  .empty{ font-size:14px; color:var(--ink-muted); border:1px dashed var(--paper-line); padding:24px; border-radius:2px; }
+
+  .not-found{ padding:40px 0; }
+  .not-found h1{ font-family:'Fraunces', serif; font-size:28px; margin:0 0 12px; }
+  .not-found p{ color:var(--ink-muted); font-size:14.5px; margin-bottom:20px; }
+  .back-link{ color:var(--verdigris-deep); font-weight:600; text-decoration:none; font-size:14px; }
+  .back-link:hover{ text-decoration:underline; }
+
+  @media (max-width: 600px){
+    .row{ grid-template-columns:1fr; gap:6px; }
+    .row__date{ text-align:left; }
+  }
+</style>
