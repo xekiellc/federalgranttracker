@@ -11,17 +11,12 @@
 // same D1 database via `wrangler d1 execute` using CLOUDFLARE_API_TOKEN
 // (no Cloudflare Workers binding involved at all).
 //
-// HONESTY NOTE: the USASpending request shape (filters, field names) is
-// unchanged from the Workers version and was never confirmed against a
-// live response, since every prior attempt failed at the network layer
-// before reaching this logic. Expect this first real run may still need
-// adjustment to field names in parseAward() — same as happened with the
-// Grants.gov sync.
-//
-// This file uses a .cjs extension (not .js) because the repo's root
-// package.json has "type": "module" for the Astro site — that makes Node
-// treat plain .js files as ES modules by default, where require() isn't
-// available. .cjs forces CommonJS treatment for this one file regardless.
+// UPDATE: first live run revealed a real USASpending API constraint —
+// award_type_codes must all belong to a single group (e.g. "grants" is
+// its own group; mixing it with "other financial assistance" codes like
+// 06/10/11 triggers a 422). Narrowed to the pure grants group: Block
+// Grant (02), Formula Grant (03), Project Grant (04), Cooperative
+// Agreement (05).
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -30,7 +25,7 @@ const os = require('os');
 
 const USASPENDING_SEARCH_URL = 'https://api.usaspending.gov/api/v2/search/spending_by_award/';
 const D1_DATABASE_NAME = 'federalgranttracker';
-const GRANT_AWARD_TYPE_CODES = ['02', '03', '04', '05', '06', '10', '11'];
+const GRANT_AWARD_TYPE_CODES = ['02', '03', '04', '05'];
 
 function currentFiscalYear() {
   const now = new Date();
