@@ -1,28 +1,37 @@
-// Federal Grant Tracker — sync worker (NIH opportunities from Grants.gov)
+// Federal Grant Tracker — sync worker (opportunities from Grants.gov, all tracked agencies)
 //
-// HONESTY NOTE: the Grants.gov API call and response parsing below are written
-// against the publicly documented shape of the search2 endpoint, but this has
-// NOT been tested against a live response — this sandbox has no network access
-// to grants.gov. Expect the first real run to need adjustment, most likely to
-// the field names read off each search hit in parseOpportunity(). Everything
-// database-side (the upsert logic) HAS been tested against the real schema.
+// UPDATE: originally NIH-only. Broadened to loop through all agencies in
+// the `agencies` table, since USDA/DOD/DOE/HHS/NSF have real Grants.gov
+// agency codes we already confirmed live in an earlier debug run of this
+// same worker (when the agency filter was left empty and Grants.gov
+// returned its full agency facet list). HHS is queried before NIH
+// specifically, since NIH's opportunities also show up under the broader
+// HHS query — querying NIH last ensures those opportunities end up
+// correctly attributed to NIH rather than the broader HHS bucket, since
+// the upsert's ON CONFLICT overwrites agency_id with whichever run
+// processed a given opportunity_number most recently.
 //
-// This worker runs on a schedule (see wrangler.toml) and also exposes a manual
-// trigger via GET request, gated by a shared secret, so it can be debugged
-// without waiting for the next scheduled run.
+// This worker runs on a schedule (see wrangler.toml) and also exposes a
+// manual trigger via GET request, gated by a shared secret, so it can be
+// debugged without waiting for the next scheduled run.
 
 const GRANTS_GOV_SEARCH_URL = 'https://api.grants.gov/v1/api/search2';
 
-// Grants.gov's own opportunity statuses line up directly with the CHECK
-// constraint on opportunities.status in schema.sql — forecasted/posted/
-// closed/archived — so no mapping table is needed, just pass the value
-// through (lowercased, defensively).
 const VALID_STATUSES = ['forecasted', 'posted', 'closed', 'archived'];
 
+// local agencies.code -> Grants.gov's own agency filter value. Order
+// matters: broader agencies first, more specific subagencies last, so
+// specific attribution wins on overlapping opportunities (see note above).
+const AGENCY_SYNC_ORDER = [
+  { localCode: 'USDA', grantsGovValue: 'USDA' },
+  { localCode: 'DOD', grantsGovValue: 'DOD' },
+  { localCode: 'DOE', grantsGovValue: 'DOE' },
+  { localCode: 'NSF', grantsGovValue: 'NSF' },
+  { localCode: 'HHS', grantsGovValue: 'HHS' },
+  { localCode: 'NIH', grantsGovValue: 'HHS-NIH11' },
+];
+
 function toIsoDate(mmddyyyy) {
-  // Grants.gov dates are typically "MM/DD/YYYY"; convert to "YYYY-MM-DD" so
-  // they sort correctly as TEXT in SQLite. Returns null if unparseable
-  // rather than throwing, so one bad date doesn't kill the whole sync.
   if (!mmddyyyy || typeof mmddyyyy !== 'string') return null;
   const parts = mmddyyyy.split('/');
   if (parts.length !== 3) return null;
@@ -40,8 +49,6 @@ function slugify(text) {
 }
 
 function parseOpportunity(hit) {
-  // Best-guess field names based on Grants.gov's documented search2 response.
-  // If the live response differs, these are the lines to fix first.
   const opportunityNumber = hit.number || hit.opportunityNumber || hit.id;
   const title = hit.title || 'Untitled opportunity';
   let status = (hit.oppStatus || hit.status || 'posted').toLowerCase();
@@ -62,44 +69,31 @@ function parseOpportunity(hit) {
   };
 }
 
-async function fetchNihOpportunities() {
-  const requestBody = {
-    rows: 50,
-    keyword: '',
-    oppStatuses: 'forecasted|posted',
-    agencies: 'HHS-NIH11',
-  };
-
+async function fetchAgencyOpportunities(grantsGovValue) {
   const response = await fetch(GRANTS_GOV_SEARCH_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
+    body: JSON.stringify({
+      rows: 50,
+      keyword: '',
+      oppStatuses: 'forecasted|posted',
+      agencies: grantsGovValue,
+    }),
   });
 
   if (!response.ok) {
-    throw new Error(`Grants.gov request failed: ${response.status} ${response.statusText}`);
+    throw new Error(`Grants.gov request failed for ${grantsGovValue}: ${response.status} ${response.statusText}`);
   }
 
   const json = await response.json();
   const hits = json?.data?.oppHits;
   if (!Array.isArray(hits)) {
-    throw new Error('Unexpected Grants.gov response shape: no data.oppHits array found');
+    throw new Error(`Unexpected Grants.gov response shape for ${grantsGovValue}: no data.oppHits array found`);
   }
-
-  const opportunities = hits.map(parseOpportunity);
-
-  // Lightweight summary for the manual-trigger response — enough to confirm
-  // a run behaved as expected without dumping Grants.gov's full facet
-  // payload (agencies/eligibilities/funding categories etc.) on every hit.
-  const summary = {
-    hitsFound: hits.length,
-    totalMatchingGrantsGov: json?.data?.hitCount ?? null,
-  };
-
-  return { opportunities, summary };
+  return hits.map(parseOpportunity);
 }
 
-async function upsertOpportunity(db, nihAgencyId, opp) {
+async function upsertOpportunity(db, agencyId, opp) {
   await db.prepare(`
     INSERT INTO opportunities (
       slug, opportunity_number, title, agency_id, cfda_number,
@@ -108,6 +102,7 @@ async function upsertOpportunity(db, nihAgencyId, opp) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(opportunity_number) DO UPDATE SET
       title = excluded.title,
+      agency_id = excluded.agency_id,
       cfda_number = excluded.cfda_number,
       status = excluded.status,
       posted_date = excluded.posted_date,
@@ -118,7 +113,7 @@ async function upsertOpportunity(db, nihAgencyId, opp) {
     opp.slug,
     opp.opportunity_number,
     opp.title,
-    nihAgencyId,
+    agencyId,
     opp.cfda_number,
     opp.status,
     opp.posted_date,
@@ -133,34 +128,48 @@ async function runSync(env) {
   ).run();
   const runId = runStart.meta.last_row_id;
 
+  const perAgencySummary = [];
+  let totalProcessed = 0;
+
   try {
-    const nihAgency = await db.prepare(
-      `SELECT id FROM agencies WHERE code = 'NIH'`
-    ).first();
-    if (!nihAgency) {
-      throw new Error('NIH agency not found in agencies table — was seed.sql run?');
-    }
+    for (const { localCode, grantsGovValue } of AGENCY_SYNC_ORDER) {
+      const agencyRow = await db.prepare(
+        `SELECT id FROM agencies WHERE code = ?`
+      ).bind(localCode).first();
 
-    const { opportunities, summary } = await fetchNihOpportunities();
+      if (!agencyRow) {
+        perAgencySummary.push({ localCode, skipped: 'not found in agencies table' });
+        continue;
+      }
 
-    let processed = 0;
-    for (const opp of opportunities) {
-      if (!opp.opportunity_number) continue; // skip anything we can't uniquely identify
-      await upsertOpportunity(db, nihAgency.id, opp);
-      processed++;
+      try {
+        const opportunities = await fetchAgencyOpportunities(grantsGovValue);
+        let agencyProcessed = 0;
+        for (const opp of opportunities) {
+          if (!opp.opportunity_number) continue;
+          await upsertOpportunity(db, agencyRow.id, opp);
+          agencyProcessed++;
+        }
+        totalProcessed += agencyProcessed;
+        perAgencySummary.push({ localCode, hitsFound: opportunities.length, processed: agencyProcessed });
+      } catch (agencyErr) {
+        // One agency failing shouldn't abort the whole run — record it and
+        // keep going with the rest.
+        perAgencySummary.push({ localCode, error: String(agencyErr.message || agencyErr) });
+      }
     }
 
     await db.prepare(
       `UPDATE sync_runs SET status = 'success', finished_at = datetime('now'), records_processed = ? WHERE id = ?`
-    ).bind(processed, runId).run();
+    ).bind(totalProcessed, runId).run();
 
-    return { success: true, processed, summary };
+    return { success: true, processed: totalProcessed, perAgencySummary };
   } catch (err) {
     await db.prepare(
       `UPDATE sync_runs SET status = 'failed', finished_at = datetime('now'), error_message = ? WHERE id = ?`
     ).bind(String(err.message || err), runId).run();
 
-    return { success: false, error: String(err.message || err) };
+    return { success: false, error: String(err.message || err), perAgencySummary };
   }
 }
 
@@ -173,9 +182,6 @@ export default {
     const url = new URL(request.url);
     const providedSecret = url.searchParams.get('secret');
 
-    // Manual trigger for debugging — requires SYNC_SECRET to be set via
-    // `wrangler secret put SYNC_SECRET` (or the dashboard) before this does
-    // anything. Until that's set, this just returns a status message.
     if (!env.SYNC_SECRET) {
       return new Response(
         'Sync worker is deployed but SYNC_SECRET is not set — manual trigger disabled. Scheduled runs (every 6 hours) still work once deployed.',
