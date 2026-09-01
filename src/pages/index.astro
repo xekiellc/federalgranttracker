@@ -11,6 +11,8 @@ import { env } from 'cloudflare:workers';
 
 let openOpportunitiesCount: number | null = null;
 let agenciesTrackedCount: number | null = null;
+let recipientsCount: number | null = null;
+let totalAwarded: number | null = null;
 let newestOpportunity: {
   title: string;
   status: string;
@@ -20,6 +22,12 @@ let newestOpportunity: {
   slug: string;
   agency_name: string | null;
 } | null = null;
+let recentAwards: {
+  recipient_name: string;
+  amount: number;
+  award_date: string;
+  agency_name: string | null;
+}[] = [];
 try {
   const db = (env as any)?.DB;
   if (!db) {
@@ -36,6 +44,16 @@ try {
     .first();
   agenciesTrackedCount = (agenciesCountResult?.count as number) ?? 0;
 
+  const totalAwardedResult = await db
+    .prepare(`SELECT SUM(amount) as total FROM awards`)
+    .first();
+  totalAwarded = (totalAwardedResult?.total as number) ?? null;
+
+  const recipientsCountResult = await db
+    .prepare(`SELECT COUNT(*) as count FROM recipients`)
+    .first();
+  recipientsCount = (recipientsCountResult?.count as number) ?? 0;
+
   newestOpportunity = await db
     .prepare(`
       SELECT o.title, o.status, o.posted_date, o.close_date, o.cfda_number, o.slug,
@@ -47,6 +65,18 @@ try {
       LIMIT 1
     `)
     .first();
+
+  const recentAwardsResult = await db
+    .prepare(`
+      SELECT r.name as recipient_name, a.amount, a.award_date, ag.name as agency_name
+      FROM awards a
+      JOIN recipients r ON a.recipient_id = r.id
+      LEFT JOIN agencies ag ON a.agency_id = ag.id
+      ORDER BY a.award_date DESC
+      LIMIT 5
+    `)
+    .all();
+  recentAwards = (recentAwardsResult?.results as any[]) ?? [];
 } catch (err) {
   // If D1 is unreachable, or the runtime binding isn't where we expect it,
   // fall back to nulls rather than crashing the homepage with a 500 — the
@@ -65,6 +95,33 @@ function formatDate(iso: string | null): string {
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
+
+function formatCompactUsd(amount: number | null): string {
+  if (amount === null || !Number.isFinite(amount)) return '—';
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000_000) return `$${(amount / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(amount / 1_000).toFixed(1)}K`;
+  return `$${amount.toLocaleString()}`;
+}
+
+function formatFullUsd(amount: number | null): string {
+  if (amount === null || !Number.isFinite(amount)) return '—';
+  return `$${amount.toLocaleString()}`;
+}
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso + 'T00:00:00Z').getTime();
+  const now = Date.now();
+  const days = Math.floor((now - then) / (1000 * 60 * 60 * 24));
+  if (days <= 0) return 'Today';
+  if (days === 1) return '1 day ago';
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} ${months === 1 ? 'month' : 'months'} ago`;
+  const years = Math.floor(months / 12);
+  return `${years} ${years === 1 ? 'year' : 'years'} ago`;
+}
 ---
 <Base>
 
@@ -81,11 +138,8 @@ function formatDate(iso: string | null): string {
   <div class="ledger">
     <div class="ledger__row">
       <div class="ledger__cell">
-        <!-- PLACEHOLDER: awards table doesn't exist yet (USASpending sync not
-             built) — showing an honest em-dash instead of a fabricated dollar
-             figure, rather than let a fake number sit next to real data. -->
-        <span class="ledger__num">—</span>
-        <span class="ledger__label">Awarded, FY2026</span>
+        <span class="ledger__num">{formatCompactUsd(totalAwarded)}</span>
+        <span class="ledger__label">Awarded, NIH grants</span>
       </div>
       <div class="ledger__cell">
         <span class="ledger__num">{openOpportunitiesCount !== null ? openOpportunitiesCount.toLocaleString() : '—'}</span>
@@ -137,8 +191,7 @@ function formatDate(iso: string | null): string {
       </div>
       <div class="record__side">
         <h4>Where it went last cycle</h4>
-        <!-- PLACEHOLDER: award history requires the USASpending sync, not built yet -->
-        <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">Award history isn't tracked yet — this section goes live once the USASpending sync is built.</p>
+        <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">Award history isn't matched to specific opportunities yet — browse recent awards below in the meantime.</p>
       </div>
     </div>
   ) : (
@@ -149,52 +202,60 @@ function formatDate(iso: string | null): string {
 </section>
 
 <section class="section" id="lookup">
-  <!-- Recipient lookup requires the `recipients` and `awards` tables,
-       sourced from USASpending.gov — not built yet. Showing an honest
-       not-available state rather than any sample/mock numbers. -->
   <div class="section__head">
     <h2 class="section__title">Recipient lookup</h2>
-    <p class="section__note">Search any university, hospital, nonprofit, city, or company that receives federal funding.</p>
+    <p class="section__note">Search recipients of NIH grant awards.</p>
   </div>
 
   <div class="lookup">
-    <form class="lookup__search" role="search" onsubmit="return false;">
-      <input type="text" placeholder="Search a recipient — university, nonprofit, company, city…" aria-label="Search a recipient" disabled>
-      <button type="submit" disabled>Search</button>
+    <form class="lookup__search" role="search" method="get" action="/recipients">
+      <input type="text" name="q" placeholder="Search a recipient — university, nonprofit, company, city…" aria-label="Search a recipient">
+      <button type="submit">Search</button>
     </form>
-    <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:20px; border-radius:2px; margin:0;">
-      Recipient and award data isn't tracked yet — this section goes live once the USASpending.gov sync is built.
+    <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; margin:0;">
+      {recipientsCount !== null ? recipientsCount.toLocaleString() : '—'} recipients tracked so far, sourced from USASpending.gov. <a href="/recipients" style="color:var(--verdigris-deep); font-weight:600; text-decoration:none;">Browse all →</a>
     </p>
   </div>
 </section>
 
 <section class="section section--map" id="map">
   <!-- State-level funding requires the `awards` table joined to `states` —
-       not built yet. Showing an honest not-available state rather than a
+       our USASpending sync doesn't currently capture place-of-performance
+       state, so this stays an honest not-available state rather than a
        map filled with invented per-state dollar figures. -->
   <div class="section__head">
     <h2 class="section__title">Where the money goes</h2>
-    <p class="section__note">Funding by state will appear here once award data is available.</p>
+    <p class="section__note">Funding by state will appear here once state-level award data is available.</p>
   </div>
   <div class="map-panel" style="grid-template-columns:1fr;">
     <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:32px; border-radius:2px; margin:0; text-align:center;">
-      State-by-state funding data isn't tracked yet — this map goes live once the USASpending.gov sync is built.
+      State-by-state funding data isn't tracked yet.
     </p>
   </div>
 </section>
 
 <section class="section">
-  <!-- Requires the `awards` table — not built yet. Showing an honest empty
-       state rather than fabricated award rows. -->
   <div class="section__head">
     <h2 class="section__title">Recently awarded</h2>
-    <p class="section__note">A live stream of new awards as agencies report them.</p>
+    <p class="section__note">NIH grant awards, most recent first, sourced from USASpending.gov.</p>
   </div>
-  <div class="stream">
+  {recentAwards.length > 0 ? (
+    <div class="stream">
+      {recentAwards.map((award) => (
+        <div class="stream__row">
+          <span class="stream__time">{relativeTime(award.award_date)}</span>
+          <span class="stream__agency">{award.agency_name ?? 'NIH'}</span>
+          <span class="stream__amt">{formatFullUsd(award.amount)}</span>
+          <span class="stream__recipient">{award.recipient_name}</span>
+        </div>
+      ))}
+      <div class="stream__foot"><a href="/recipients">Browse all recipients →</a></div>
+    </div>
+  ) : (
     <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; padding:24px 20px; margin:0;">
-      Award data isn't tracked yet — this stream goes live once the USASpending.gov sync is built.
+      No awards synced yet.
     </p>
-  </div>
+  )}
 </section>
 
 </Base>
@@ -386,7 +447,7 @@ function formatDate(iso: string | null): string {
 
   .stream{ border:1px solid var(--paper-line); background:var(--paper-soft); }
   .stream__row{
-    display:grid; grid-template-columns:80px 70px 130px 1.4fr 1fr; gap:16px; align-items:center;
+    display:grid; grid-template-columns:100px 90px 130px 1fr; gap:16px; align-items:center;
     padding:13px 20px; border-top:1px solid var(--paper-line); font-size:13px;
   }
   .stream__row:first-child{ border-top:none; }
