@@ -1,0 +1,131 @@
+---
+import Base from '../layouts/Base.astro';
+import { env } from 'cloudflare:workers';
+
+const query = Astro.url.searchParams.get('q')?.trim() ?? '';
+
+let results: {
+  slug: string;
+  name: string;
+  recipient_type: string | null;
+  award_count: number;
+  total_amount: number;
+}[] = [];
+let totalRecipients = 0;
+
+function formatCompactUsd(amount: number | null): string {
+  if (amount === null || !Number.isFinite(amount)) return '—';
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000_000) return `$${(amount / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(amount / 1_000).toFixed(1)}K`;
+  return `$${amount.toLocaleString()}`;
+}
+
+try {
+  const db = (env as any)?.DB;
+  if (db) {
+    const totalResult = await db
+      .prepare(`SELECT COUNT(*) as count FROM recipients`)
+      .first();
+    totalRecipients = (totalResult?.count as number) ?? 0;
+
+    const whereClause = query ? `WHERE r.name LIKE ?` : '';
+    const stmt = db.prepare(`
+      SELECT r.slug, r.name, r.recipient_type,
+             COUNT(a.id) as award_count,
+             SUM(a.amount) as total_amount
+      FROM recipients r
+      LEFT JOIN awards a ON a.recipient_id = r.id
+      ${whereClause}
+      GROUP BY r.id
+      ORDER BY total_amount DESC
+      LIMIT 50
+    `);
+    const result = query ? await stmt.bind(`%${query}%`).all() : await stmt.all();
+    results = (result?.results as any[]) ?? [];
+  }
+} catch (err) {
+  console.error('Recipients search D1 query failed:', err);
+}
+
+const pageTitle = query
+  ? `"${query}" — Recipients — Federal Grant Tracker`
+  : 'Recipients — Federal Grant Tracker';
+---
+<Base title={pageTitle}>
+
+<div class="wrap">
+  <p class="breadcrumb"><a href="/">Home</a> / Recipients</p>
+
+  <form class="search-line" role="search" method="get" action="/recipients">
+    <input type="text" name="q" value={query} placeholder="Search a recipient — university, nonprofit, company, city…" aria-label="Search recipients">
+    <button type="submit">Search</button>
+  </form>
+
+  <p class="sub">
+    {query
+      ? `${results.length} result${results.length === 1 ? '' : 's'} for "${query}"`
+      : `Showing ${results.length} of ${totalRecipients} tracked ${totalRecipients === 1 ? 'recipient' : 'recipients'}`}
+  </p>
+
+  {results.length > 0 ? (
+    <div class="list">
+      {results.map((r) => (
+        <a class="row" href={`/recipient/${r.slug}`}>
+          <span class="row__main">
+            <span class="row__name">{r.name}</span>
+            <span class="row__count">{r.award_count} {r.award_count === 1 ? 'award' : 'awards'}</span>
+          </span>
+          <span class="row__amt">{formatCompactUsd(r.total_amount)}</span>
+        </a>
+      ))}
+    </div>
+  ) : (
+    <p class="empty">
+      {query
+        ? `No tracked recipients match "${query}".`
+        : 'No recipients currently tracked.'}
+    </p>
+  )}
+</div>
+
+</Base>
+
+<style>
+  .wrap{ max-width:900px; margin:0 auto; padding:34px 28px 60px; }
+  .breadcrumb{ font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--ink-muted); margin:0 0 20px; }
+  .breadcrumb a{ text-decoration:none; color:var(--ink-muted); }
+  .breadcrumb a:hover{ color:var(--verdigris-deep); }
+
+  .search-line{
+    display:flex; align-items:center; gap:12px; background:var(--paper-soft);
+    border:1px solid var(--ink); padding:6px 6px 6px 20px; margin-bottom:20px; border-radius:2px;
+  }
+  .search-line input{
+    border:none; background:transparent; flex:1; font-family:'IBM Plex Mono', monospace;
+    font-size:14px; padding:12px 0; color:var(--ink-text);
+  }
+  .search-line input:focus{ outline:none; }
+  .search-line button{
+    background:var(--verdigris-deep); color:var(--paper); border:none; padding:11px 20px;
+    border-radius:1px; font-weight:600; font-size:13px; cursor:pointer; font-family:inherit; white-space:nowrap;
+  }
+  .search-line button:hover{ background:#255241; }
+
+  .sub{ font-size:14px; color:var(--ink-muted); margin-bottom:20px; }
+
+  .list{ border:1px solid var(--paper-line); background:var(--paper-soft); }
+  .row{
+    display:flex; justify-content:space-between; align-items:center; gap:16px;
+    padding:16px 20px; border-top:1px solid var(--paper-line); text-decoration:none; color:inherit;
+  }
+  .row:first-child{ border-top:none; }
+  .row:hover{ background:var(--paper); }
+  .row__main{ display:flex; flex-direction:column; gap:3px; min-width:0; }
+  .row__name{ font-size:14.5px; color:var(--ink-text); }
+  .row__count{ font-size:12px; color:var(--ink-muted); font-family:'IBM Plex Mono', monospace; }
+  .row__amt{ font-family:'IBM Plex Mono', monospace; font-weight:600; color:var(--verdigris-deep); white-space:nowrap; }
+
+  .empty{ font-size:14px; color:var(--ink-muted); border:1px dashed var(--paper-line); padding:24px; border-radius:2px; }
+</style>
