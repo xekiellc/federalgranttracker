@@ -181,9 +181,6 @@ function relativeTime(iso: string): string {
           <span class="stage">Closed</span><span class="arrow">→</span>
           <span class="stage">Archived</span>
         </div>
-        <div class="record__tabs">
-          <span>Overview</span><span>Eligibility</span><span>Awards</span><span>History</span><span>Documents</span>
-        </div>
         <ul class="record__list">
           <li><span>CFDA number</span><span class="mono">{newestOpportunity.cfda_number ?? '—'}</span></li>
           <li><span>Opportunity page</span><span class="mono">/opportunity/{newestOpportunity.slug}</span></li>
@@ -191,7 +188,7 @@ function relativeTime(iso: string): string {
       </div>
       <div class="record__side">
         <h4>Where it went last cycle</h4>
-        <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">Award history isn't matched to specific opportunities yet — browse recent awards below in the meantime.</p>
+        <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">Award history isn't tracked yet — this section goes live once the USASpending sync is built.</p>
       </div>
     </div>
   ) : (
@@ -220,16 +217,15 @@ function relativeTime(iso: string): string {
 
 <section class="section section--map" id="map">
   <!-- State-level funding requires the `awards` table joined to `states` —
-       our USASpending sync doesn't currently capture place-of-performance
-       state, so this stays an honest not-available state rather than a
+       not built yet. Showing an honest not-available state rather than a
        map filled with invented per-state dollar figures. -->
   <div class="section__head">
     <h2 class="section__title">Where the money goes</h2>
-    <p class="section__note">Funding by state will appear here once state-level award data is available.</p>
+    <p class="section__note">Funding by state will appear here once award data is available.</p>
   </div>
   <div class="map-panel" style="grid-template-columns:1fr;">
     <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:32px; border-radius:2px; margin:0; text-align:center;">
-      State-by-state funding data isn't tracked yet.
+      State-by-state funding data isn't tracked yet — this map goes live once the USASpending.gov sync is built.
     </p>
   </div>
 </section>
@@ -345,12 +341,6 @@ function relativeTime(iso: string): string {
   .record__title{ font-family:'Fraunces', serif; font-size:25px; font-weight:600; margin:0 0 12px; max-width:20ch; }
   .record__amount{ font-family:'IBM Plex Mono', monospace; font-size:21px; font-weight:600; color:var(--verdigris-deep); margin-bottom:4px; }
   .record__meta{ font-size:13.5px; color:var(--ink-muted); margin-bottom:16px; }
-  .record__tabs{ display:flex; gap:2px; margin-bottom:18px; flex-wrap:wrap; }
-  .record__tabs span{
-    font-family:'IBM Plex Mono', monospace; font-size:10.5px; letter-spacing:0.06em; padding:6px 10px;
-    color:var(--ink-muted); border:1px solid var(--paper-line); border-radius:2px; text-transform:uppercase;
-  }
-  .record__tabs span:first-child{ color:var(--ink); border-color:var(--ink); font-weight:600; }
   .record__lifecycle{
     display:flex; align-items:center; gap:6px; margin-bottom:16px; font-family:'IBM Plex Mono', monospace;
     font-size:10px; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-muted); flex-wrap:wrap;
