@@ -1,0 +1,123 @@
+---
+import Base from '../layouts/Base.astro';
+import { env } from 'cloudflare:workers';
+
+let latestRuns: {
+  source: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  records_processed: number;
+}[] = [];
+
+try {
+  const db = (env as any)?.DB;
+  if (db) {
+    const result = await db
+      .prepare(`
+        SELECT source, started_at, finished_at, status, records_processed
+        FROM sync_runs
+        WHERE status = 'success'
+        AND id IN (
+          SELECT MAX(id) FROM sync_runs WHERE status = 'success' GROUP BY source
+        )
+      `)
+      .all();
+    latestRuns = (result?.results as any[]) ?? [];
+  }
+} catch (err) {
+  console.error('About-data page D1 query failed:', err);
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso.replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+const grantsGovRun = latestRuns.find((r) => r.source === 'grants_gov');
+const usaspendingRun = latestRuns.find((r) => r.source === 'usaspending');
+---
+<Base title="About this data — Federal Grant Tracker">
+
+<div class="wrap">
+  <p class="breadcrumb"><a href="/">Home</a> / About this data</p>
+  <h1 class="title">About this data</h1>
+
+  <p class="intro">
+    Federal Grant Tracker is an independent project, not affiliated with any federal agency.
+    Data is pulled directly from two official government sources on a recurring schedule.
+  </p>
+
+  <div class="source-card">
+    <h2>Grants.gov — funding opportunities</h2>
+    <p class="source-desc">Opportunity postings, forecasts, and lifecycle status (forecasted / posted / closed / archived) come directly from Grants.gov's public search API.</p>
+    {grantsGovRun ? (
+      <ul class="stat-list">
+        <li><span>Last successful sync</span><span class="mono">{formatDateTime(grantsGovRun.started_at)}</span></li>
+        <li><span>Records processed that run</span><span class="mono">{grantsGovRun.records_processed}</span></li>
+      </ul>
+    ) : (
+      <p class="empty">No successful sync recorded yet.</p>
+    )}
+  </div>
+
+  <div class="source-card">
+    <h2>USASpending.gov — awards and recipients</h2>
+    <p class="source-desc">Award amounts, recipients, and funding totals are sourced from USASpending.gov, the official record of federal spending.</p>
+    {usaspendingRun ? (
+      <ul class="stat-list">
+        <li><span>Last successful sync</span><span class="mono">{formatDateTime(usaspendingRun.started_at)}</span></li>
+        <li><span>Records processed that run</span><span class="mono">{usaspendingRun.records_processed}</span></li>
+      </ul>
+    ) : (
+      <p class="empty">This sync hasn't completed successfully yet — award, recipient, and funding data isn't shown on the site until it does. No estimated or placeholder figures are shown in the meantime.</p>
+    )}
+  </div>
+
+  <h2 class="section-title">What isn't tracked yet</h2>
+  <ul class="plain-list">
+    <li>Award amounts, recipients, and funding totals (pending the USASpending.gov sync completing successfully)</li>
+    <li>State-by-state and per-capita funding breakdowns</li>
+    <li>Accounts, saved searches, or email alerts — none of this site requires or stores a login</li>
+  </ul>
+
+  <h2 class="section-title">A note on accuracy</h2>
+  <p class="note">
+    This site does not use estimated, sample, or placeholder figures anywhere. Where a data source
+    hasn't successfully synced, the relevant section says so plainly rather than showing invented numbers.
+  </p>
+</div>
+
+</Base>
+
+<style>
+  .wrap{ max-width:760px; margin:0 auto; padding:34px 28px 60px; }
+  .breadcrumb{ font-family:'IBM Plex Mono', monospace; font-size:12px; color:var(--ink-muted); margin:0 0 20px; }
+  .breadcrumb a{ text-decoration:none; color:var(--ink-muted); }
+  .breadcrumb a:hover{ color:var(--verdigris-deep); }
+
+  .title{ font-family:'Fraunces', serif; font-size:32px; font-weight:600; margin:0 0 16px; }
+  .intro{ font-size:15px; line-height:1.65; color:var(--ink-text); margin-bottom:32px; }
+
+  .source-card{
+    background:var(--paper-soft); border:1px solid var(--paper-line); border-radius:2px;
+    padding:24px; margin-bottom:20px;
+  }
+  .source-card h2{ font-family:'Fraunces', serif; font-size:18px; font-weight:600; margin:0 0 10px; }
+  .source-desc{ font-size:13.5px; color:var(--ink-muted); line-height:1.6; margin-bottom:16px; }
+
+  .stat-list{ list-style:none; padding:0; margin:0; font-size:13.5px; }
+  .stat-list li{ padding:8px 0; border-top:1px solid var(--paper-line); display:flex; justify-content:space-between; gap:10px; }
+  .stat-list li:first-child{ border-top:none; }
+
+  .empty{ font-size:13.5px; color:var(--ink-muted); font-style:italic; margin:0; }
+
+  .section-title{ font-family:'Fraunces', serif; font-size:20px; font-weight:600; margin:36px 0 14px; }
+  .plain-list{ font-size:14px; color:var(--ink-text); line-height:1.7; padding-left:20px; margin:0 0 24px; }
+  .note{ font-size:14px; color:var(--ink-muted); line-height:1.65; }
+</style>
