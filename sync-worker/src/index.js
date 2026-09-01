@@ -18,6 +18,20 @@
 //     alone has 935 open+forecasted opportunities per that same debug
 //     dump) — raised per-agency row cap so real totals aren't truncated.
 //
+// UPDATE 3: after (1) and (2) shipped, a live run surfaced a THIRD real
+// bug — "UNIQUE constraint failed: opportunities.slug" on USDA/DOD/HHS/NIH.
+// Root cause: slug generation truncated the combined "title-number" string
+// to 80 chars, which for long real titles silently dropped the opportunity
+// number — the actual unique identifier — entirely. Two different
+// opportunities with a similar long title prefix then generated the exact
+// same slug even though their opportunity_number differed, and the upsert's
+// ON CONFLICT(opportunity_number) doesn't catch a collision on a different
+// column. This only surfaced once real volume (hundreds of records) made
+// long-title collisions likely — the original 50-row NIH/NSF-only runs
+// never hit it. Fixed by truncating the title portion BEFORE appending the
+// full, untruncated opportunity number. Also added per-row error isolation
+// so one bad row can no longer abort the rest of that agency's batch.
+//
 // This worker runs on a schedule (see wrangler.toml) and also exposes a
 // manual trigger via GET request, gated by a shared secret, so it can be
 // debugged without waiting for the next scheduled run.
@@ -91,8 +105,19 @@ function slugify(text) {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '')
-    .slice(0, 80);
+    .replace(/(^-|-$)/g, '');
+}
+
+function buildSlug(title, opportunityNumber) {
+  // Truncate the title portion BEFORE appending the opportunity number, so
+  // the number — the actual unique identifier — is never cut off. The
+  // previous version truncated the combined "title-number" string to 80
+  // chars, which for long real titles silently dropped the number entirely,
+  // making two different opportunities collide on the same slug even
+  // though their opportunity_number (the real upsert key) differed.
+  const titleSlug = slugify(title).slice(0, 60);
+  const numberSlug = slugify(String(opportunityNumber));
+  return `${titleSlug}-${numberSlug}`;
 }
 
 function parseOpportunity(hit) {
@@ -107,7 +132,7 @@ function parseOpportunity(hit) {
 
   return {
     opportunity_number: opportunityNumber,
-    slug: slugify(`${title}-${opportunityNumber}`),
+    slug: buildSlug(title, opportunityNumber),
     title,
     cfda_number: cfdaNumber,
     status,
@@ -192,16 +217,28 @@ async function runSync(env) {
       try {
         const opportunities = await fetchAgencyOpportunities(grantsGovValue);
         let agencyProcessed = 0;
+        let agencyFailed = 0;
         for (const opp of opportunities) {
           if (!opp.opportunity_number) continue;
-          await upsertOpportunity(db, agencyRow.id, opp);
-          agencyProcessed++;
+          try {
+            await upsertOpportunity(db, agencyRow.id, opp);
+            agencyProcessed++;
+          } catch (rowErr) {
+            // One bad row (e.g. an unexpected slug collision) shouldn't
+            // abort the rest of this agency's batch.
+            agencyFailed++;
+          }
         }
         totalProcessed += agencyProcessed;
-        perAgencySummary.push({ localCode, hitsFound: opportunities.length, processed: agencyProcessed });
+        perAgencySummary.push({
+          localCode,
+          hitsFound: opportunities.length,
+          processed: agencyProcessed,
+          ...(agencyFailed > 0 ? { rowsFailed: agencyFailed } : {}),
+        });
       } catch (agencyErr) {
-        // One agency failing shouldn't abort the whole run — record it and
-        // keep going with the rest.
+        // The agency's fetch itself failing (not an individual row) still
+        // skips that whole agency for this run.
         perAgencySummary.push({ localCode, error: String(agencyErr.message || agencyErr) });
       }
     }
