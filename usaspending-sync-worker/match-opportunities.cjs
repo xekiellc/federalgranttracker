@@ -22,10 +22,25 @@
 //   no changes needed in this file.
 //
 //   Tier 2 — 'cfda_inferred': awards.cfda_number matches an opportunity
-//   with the same cfda_number and same agency_id, whose posted_date is
-//   the closest date at-or-before the award's award_date. This is the
-//   real matching path today, since it only depends on cfda_number and
-//   place-of-performance state — both of which sync.cjs now captures.
+//   with the same cfda_number and same agency_id, preferring the most
+//   recently posted such opportunity.
+//
+//   UPDATE: this originally also required opportunities.posted_date to be
+//   at-or-before the award's award_date, on the assumption award_date was
+//   roughly "when the award happened." That assumption was wrong —
+//   USASpending's "Start Date" (mapped to award_date) is the grant's
+//   original period-of-performance start, which for multi-year renewed
+//   awards (very common at NIH) can be a decade or more before the
+//   award's most recent funding action. Since opportunities only tracks
+//   current/recent Grants.gov postings, that filter excluded nearly every
+//   real award — verified live: a 2006-start NIH award with a live,
+//   correctly-matching CFDA/agency opportunity posted in 2025 was being
+//   excluded solely because 2025 > 2006. Removed the date constraint
+//   entirely; CFDA + agency alone is the real signal here, and picking
+//   the most recently posted matching opportunity is the best available
+//   proxy for "the funding line this award falls under" — which is
+//   exactly what 'cfda_inferred' is honestly labeled as, not a claim of
+//   exact-competition identity.
 //
 // An award that matches neither tier keeps opportunity_id = NULL and
 // match_confidence = NULL, same as before this job existed — that's
@@ -60,8 +75,6 @@ SET opportunity_id = (
   SELECT o.id FROM opportunities o
   WHERE o.cfda_number = awards.cfda_number
     AND o.agency_id = awards.agency_id
-    AND o.posted_date IS NOT NULL
-    AND o.posted_date <= awards.award_date
   ORDER BY o.posted_date DESC
   LIMIT 1
 ),
@@ -102,7 +115,7 @@ function main() {
   console.log('Running Tier 1 (exact funding_opportunity_number match)...');
   runD1File_safely(TIER_1_EXACT_MATCH_SQL);
 
-  console.log('Running Tier 2 (CFDA + agency + timing inferred match)...');
+  console.log('Running Tier 2 (CFDA + agency inferred match)...');
   runD1File_safely(TIER_2_CFDA_INFERRED_MATCH_SQL);
 
   console.log('Fetching match summary...');
