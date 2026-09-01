@@ -1,15 +1,22 @@
 // Federal Grant Tracker — sync worker (opportunities from Grants.gov, all tracked agencies)
 //
-// UPDATE: originally NIH-only. Broadened to loop through all agencies in
-// the `agencies` table, since USDA/DOD/DOE/HHS/NSF have real Grants.gov
-// agency codes we already confirmed live in an earlier debug run of this
-// same worker (when the agency filter was left empty and Grants.gov
-// returned its full agency facet list). HHS is queried before NIH
-// specifically, since NIH's opportunities also show up under the broader
-// HHS query — querying NIH last ensures those opportunities end up
-// correctly attributed to NIH rather than the broader HHS bucket, since
-// the upsert's ON CONFLICT overwrites agency_id with whichever run
-// processed a given opportunity_number most recently.
+// UPDATE 2: two real bugs found from a live run's perAgencySummary output —
+//
+// (1) USDA/DOD/DOE/HHS returned 0-2 hits each, while NSF (138 total) and
+//     NIH (691 total) worked fine. Root cause: USDA/DOD/DOE/HHS are parent
+//     departments with dozens of subagencies, and most Grants.gov records
+//     are tagged with the specific subagency code (e.g. "USDA-NIFA"), not
+//     the bare parent code ("USDA") — the exact same issue NIH originally
+//     hit needing "HHS-NIH11" instead of "HHS". NSF and NIH already worked
+//     because NSF is flat (no subagencies) and NIH's code was already
+//     subagency-specific. Fixed by passing every subagency code we already
+//     confirmed live (from an earlier debug run's full agency facet dump)
+//     as a pipe-separated list, matching the same pipe-delimited format
+//     already used for oppStatuses.
+//
+// (2) rows was capped at 50 regardless of an agency's real total (HHS
+//     alone has 935 open+forecasted opportunities per that same debug
+//     dump) — raised per-agency row cap so real totals aren't truncated.
 //
 // This worker runs on a schedule (see wrangler.toml) and also exposes a
 // manual trigger via GET request, gated by a shared secret, so it can be
@@ -19,15 +26,55 @@ const GRANTS_GOV_SEARCH_URL = 'https://api.grants.gov/v1/api/search2';
 
 const VALID_STATUSES = ['forecasted', 'posted', 'closed', 'archived'];
 
-// local agencies.code -> Grants.gov's own agency filter value. Order
-// matters: broader agencies first, more specific subagencies last, so
-// specific attribution wins on overlapping opportunities (see note above).
+// Raised from 50. Largest known real total (HHS, including subagencies) is
+// 935 as of the debug run this was sourced from; 1000 covers that with
+// headroom. If Grants.gov silently caps this lower, the next run's
+// perAgencySummary hitsFound will show it and we can adjust.
+const ROWS_PER_REQUEST = 1000;
+
+// local agencies.code -> Grants.gov's own agency filter value(s). For
+// parent departments, this is every subagency code confirmed live in an
+// earlier debug run, pipe-joined (plus the bare parent code, since a few
+// records do use it directly — e.g. DOD). Order matters: broader agencies
+// first, more specific subagencies (NIH) last, so specific attribution
+// wins on overlapping opportunities via the upsert's ON CONFLICT.
 const AGENCY_SYNC_ORDER = [
-  { localCode: 'USDA', grantsGovValue: 'USDA' },
-  { localCode: 'DOD', grantsGovValue: 'DOD' },
-  { localCode: 'DOE', grantsGovValue: 'DOE' },
+  {
+    localCode: 'USDA',
+    grantsGovValue: [
+      'USDA', 'USDA-AMS', 'USDA-APHIS', 'USDA-FAS', 'USDA-FS', 'USDA-NIFA',
+      'USDA-NRCS', 'USDA-RBCS', 'USDA-RHS', 'USDA-RUS',
+    ].join('|'),
+  },
+  {
+    localCode: 'DOD',
+    grantsGovValue: [
+      'DOD', 'DOD-AMC-ACCAPGN', 'DOD-AFRL-AFRLDET8', 'DOD-AFRL', 'DOD-USAFA',
+      'DOD-AFOSR', 'DOD-AMC-ACCRI', 'DOD-DARPA-BTO', 'DOD-DARPA-DSO',
+      'DOD-DARPA-IPTO', 'DOD-DARPA-TTO', 'DOD-AMRAA', 'DOD-DTRA', 'DOD-AMC',
+      'DOD-COE-ERDC', 'DOD-COE-FW', 'DOD-AFRL-RW', 'DOD-NGIA', 'DOD-ONR-AIR',
+      'DOD-ONR-NRL', 'DOD-ONR-SUP', 'DOD-ONR-SEA-CRANE', 'DOD-ONR-SEA-N00178',
+      'DOD-OEA', 'DOD-ONR', 'DOD-AF347CS', 'DOD-WHS',
+    ].join('|'),
+  },
+  {
+    localCode: 'DOE',
+    grantsGovValue: [
+      'DOE', 'DOE-ARPAE', 'DOE-GFO', 'DOE-01', 'DOE-ID', 'DOE-NETL', 'PAMS', 'PAMS-SC',
+    ].join('|'),
+  },
   { localCode: 'NSF', grantsGovValue: 'NSF' },
-  { localCode: 'HHS', grantsGovValue: 'HHS' },
+  {
+    localCode: 'HHS',
+    grantsGovValue: [
+      'HHS', 'HHS-ASPR', 'HHS-ACF-FYSB', 'HHS-ACF', 'HHS-ACF-CB', 'HHS-ACF-OCS',
+      'HHS-ACF-OFA', 'HHS-ACF-OFVPS', 'HHS-ACF-ORR', 'HHS-ACL', 'HHS-OS-ASPR',
+      'HHS-CMS', 'HHS-CDC-CSTLTS', 'HHS-CDC-NCBDDD', 'HHS-CDC-NCCDPHP',
+      'HHS-CDC-NCEZID', 'HHS-CDC-NCHHSTP', 'HHS-CDC-NCIPC', 'HHS-CDC-OD',
+      'HHS-CDC-OPHPR', 'HHS-CDC-HHSCDCERA', 'HHS-CDC-GHC', 'HHS-FDA',
+      'HHS-HRSA', 'HHS-IHS', 'HHS-OPHS', 'HHS-OS-ONC',
+    ].join('|'),
+  },
   { localCode: 'NIH', grantsGovValue: 'HHS-NIH11' },
 ];
 
@@ -74,7 +121,7 @@ async function fetchAgencyOpportunities(grantsGovValue) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      rows: 50,
+      rows: ROWS_PER_REQUEST,
       keyword: '',
       oppStatuses: 'forecasted|posted',
       agencies: grantsGovValue,
