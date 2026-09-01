@@ -25,4 +25,5 @@ jobs:
         working-directory: usaspending-sync-worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 27782793dc31aeede4bbbf95f2c26adc
         run: node sync.cjs
