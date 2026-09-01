@@ -18,19 +18,17 @@
 //     alone has 935 open+forecasted opportunities per that same debug
 //     dump) — raised per-agency row cap so real totals aren't truncated.
 //
-// UPDATE 3: after (1) and (2) shipped, a live run surfaced a THIRD real
-// bug — "UNIQUE constraint failed: opportunities.slug" on USDA/DOD/HHS/NIH.
-// Root cause: slug generation truncated the combined "title-number" string
-// to 80 chars, which for long real titles silently dropped the opportunity
-// number — the actual unique identifier — entirely. Two different
-// opportunities with a similar long title prefix then generated the exact
-// same slug even though their opportunity_number differed, and the upsert's
-// ON CONFLICT(opportunity_number) doesn't catch a collision on a different
-// column. This only surfaced once real volume (hundreds of records) made
-// long-title collisions likely — the original 50-row NIH/NSF-only runs
-// never hit it. Fixed by truncating the title portion BEFORE appending the
-// full, untruncated opportunity number. Also added per-row error isolation
-// so one bad row can no longer abort the rest of that agency's batch.
+// UPDATE 3: fixed a slug-collision bug (title truncation was silently
+// dropping the opportunity number). UPDATE 4: after that shipped, a run
+// still hit slug collisions on the larger agencies AND threw a full
+// "Worker threw exception" (Error 1101) — a real execution-time limit,
+// from looping hundreds of individual sequential D1 writes in one
+// invocation now that real full result sets (up to 1000 rows/agency) are
+// being fetched. Fixed by switching to a single db.batch() call per
+// agency instead of sequential awaited writes, and deduping by
+// opportunity_number in-memory first, since Grants.gov's pipe-joined
+// multi-subagency query can return the same real opportunity once per
+// matching subagency code within a single response.
 //
 // This worker runs on a schedule (see wrangler.toml) and also exposes a
 // manual trigger via GET request, gated by a shared secret, so it can be
@@ -165,8 +163,8 @@ async function fetchAgencyOpportunities(grantsGovValue) {
   return hits.map(parseOpportunity);
 }
 
-async function upsertOpportunity(db, agencyId, opp) {
-  await db.prepare(`
+function buildUpsertStatement(db, agencyId, opp) {
+  return db.prepare(`
     INSERT INTO opportunities (
       slug, opportunity_number, title, agency_id, cfda_number,
       status, posted_date, close_date, last_synced_at
@@ -190,7 +188,7 @@ async function upsertOpportunity(db, agencyId, opp) {
     opp.status,
     opp.posted_date,
     opp.close_date
-  ).run();
+  );
 }
 
 async function runSync(env) {
@@ -215,30 +213,44 @@ async function runSync(env) {
       }
 
       try {
-        const opportunities = await fetchAgencyOpportunities(grantsGovValue);
+        const rawOpportunities = await fetchAgencyOpportunities(grantsGovValue);
+
+        // Dedupe by opportunity_number in case Grants.gov's pipe-joined
+        // multi-subagency query returns the same real opportunity once per
+        // matching subagency code — batching duplicate opportunity_numbers
+        // in a single db.batch() call isn't something ON CONFLICT can
+        // safely resolve mid-batch, so collapse to one row per number here.
+        const seen = new Map();
+        for (const opp of rawOpportunities) {
+          if (opp.opportunity_number) seen.set(opp.opportunity_number, opp);
+        }
+        const opportunities = Array.from(seen.values());
+
+        const statements = opportunities.map((opp) => buildUpsertStatement(db, agencyRow.id, opp));
+
         let agencyProcessed = 0;
         let agencyFailed = 0;
-        for (const opp of opportunities) {
-          if (!opp.opportunity_number) continue;
-          try {
-            await upsertOpportunity(db, agencyRow.id, opp);
-            agencyProcessed++;
-          } catch (rowErr) {
-            // One bad row (e.g. an unexpected slug collision) shouldn't
-            // abort the rest of this agency's batch.
-            agencyFailed++;
+        if (statements.length > 0) {
+          const results = await db.batch(statements);
+          for (const result of results) {
+            if (result?.success !== false) {
+              agencyProcessed++;
+            } else {
+              agencyFailed++;
+            }
           }
         }
+
         totalProcessed += agencyProcessed;
         perAgencySummary.push({
           localCode,
-          hitsFound: opportunities.length,
+          hitsFound: rawOpportunities.length,
           processed: agencyProcessed,
           ...(agencyFailed > 0 ? { rowsFailed: agencyFailed } : {}),
         });
       } catch (agencyErr) {
-        // The agency's fetch itself failing (not an individual row) still
-        // skips that whole agency for this run.
+        // The agency's fetch or batch itself failing still skips that
+        // whole agency for this run, without aborting the others.
         perAgencySummary.push({ localCode, error: String(agencyErr.message || agencyErr) });
       }
     }
