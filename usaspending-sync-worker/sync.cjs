@@ -11,12 +11,16 @@
 // same D1 database via `wrangler d1 execute` using CLOUDFLARE_API_TOKEN
 // (no Cloudflare Workers binding involved at all).
 //
-// UPDATE: first live run revealed a real USASpending API constraint —
-// award_type_codes must all belong to a single group (e.g. "grants" is
-// its own group; mixing it with "other financial assistance" codes like
-// 06/10/11 triggers a 422). Narrowed to the pure grants group: Block
-// Grant (02), Formula Grant (03), Project Grant (04), Cooperative
-// Agreement (05).
+// UPDATE: the initial version only ever fetched page 1 (100 rows) with no
+// pagination — real NIH award volume is far larger (a single major
+// recipient like Cleveland Clinic alone can have well over 100 real
+// awards), so the 55-recipient dataset from the first run was badly
+// incomplete, not a full picture. Added pagination (looping pages until
+// exhausted or a safety cap) — same root pattern as the Grants.gov sync's
+// row-cap bug fixed earlier tonight. Also widened the recipient slug
+// truncation limit, since merging distinct real organizations under a
+// truncation-collided slug would now be a much likelier silent risk at
+// this larger scale.
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -48,7 +52,7 @@ function slugify(text) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '')
-    .slice(0, 80);
+    .slice(0, 150);
 }
 
 function sqlEscape(value) {
@@ -77,51 +81,70 @@ async function fetchNihAwards() {
   const fy = currentFiscalYear();
   const { start, end } = fiscalYearRange(fy);
 
-  const requestBody = {
-    filters: {
-      award_type_codes: GRANT_AWARD_TYPE_CODES,
-      agencies: [{ type: 'awarding', tier: 'subtier', name: 'National Institutes of Health' }],
-      time_period: [{ start_date: start, end_date: end }],
-    },
-    fields: [
-      'Award ID',
-      'Recipient Name',
-      'Award Amount',
-      'Awarding Agency',
-      'Awarding Sub Agency',
-      'Start Date',
-      'End Date',
-      'Award Type',
-      'generated_internal_id',
-    ],
-    page: 1,
-    limit: 100,
-    sort: 'Award Amount',
-    order: 'desc',
-  };
+  // USASpending's own documented max page size is 100 — raising `limit`
+  // isn't an option, so real coverage requires looping through pages.
+  // Safety cap at 50 pages (5,000 awards) per run to keep this script's
+  // runtime bounded; if NIH's real total exceeds that, later runs will
+  // still catch up over time since every write is an idempotent upsert.
+  const PAGE_SIZE = 100;
+  const MAX_PAGES = 50;
 
-  const response = await fetch(USASPENDING_SEARCH_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
-    },
-    body: JSON.stringify(requestBody),
-  });
+  let allResults = [];
+  let page = 1;
 
-  if (!response.ok) {
-    const bodyText = await response.text().catch(() => '');
-    throw new Error(`USASpending request failed: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
+  while (page <= MAX_PAGES) {
+    const requestBody = {
+      filters: {
+        award_type_codes: GRANT_AWARD_TYPE_CODES,
+        agencies: [{ type: 'awarding', tier: 'subtier', name: 'National Institutes of Health' }],
+        time_period: [{ start_date: start, end_date: end }],
+      },
+      fields: [
+        'Award ID',
+        'Recipient Name',
+        'Award Amount',
+        'Awarding Agency',
+        'Awarding Sub Agency',
+        'Start Date',
+        'End Date',
+        'Award Type',
+        'generated_internal_id',
+      ],
+      page,
+      limit: PAGE_SIZE,
+      sort: 'Award Amount',
+      order: 'desc',
+    };
+
+    const response = await fetch(USASPENDING_SEARCH_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '');
+      throw new Error(`USASpending request failed on page ${page}: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
+    }
+
+    const json = await response.json();
+    const results = json?.results;
+    if (!Array.isArray(results)) {
+      throw new Error(`Unexpected USASpending response shape on page ${page}: no results array found`);
+    }
+
+    allResults = allResults.concat(results);
+    console.log(`Page ${page}: ${results.length} results (running total: ${allResults.length})`);
+
+    if (results.length < PAGE_SIZE) break; // last page reached
+    page++;
   }
 
-  const json = await response.json();
-  const results = json?.results;
-  if (!Array.isArray(results)) {
-    throw new Error('Unexpected USASpending response shape: no results array found');
-  }
-
-  return results.map(parseAward);
+  return allResults.map(parseAward);
 }
 
 // Builds one batched SQL file: an upsert for the recipient, then an upsert
