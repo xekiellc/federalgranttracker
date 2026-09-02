@@ -1,0 +1,22 @@
+name: Deploy Grants.gov Sync Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sync-worker/**'
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 27782793dc31aeede4bbbf95f2c26adc
+          workingDirectory: sync-worker
