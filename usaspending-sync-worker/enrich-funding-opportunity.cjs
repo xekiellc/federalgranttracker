@@ -67,19 +67,41 @@ function runD1Query(sql, jsonOutput = false) {
 }
 
 // wrangler's --json flag does NOT produce pure JSON output — it still
-// prints its human-readable progress banner ("├ Checking if file needs
-// uploading", "🌀 Starting import...", etc.) to the same stream, with the
-// actual JSON array appended at the end. Every other script in this repo
-// that captures --json output only ever logs it raw without parsing, so
-// this was a latent bug nobody had hit yet. Finds the line that is
-// exactly "[" (the start of wrangler's JSON array) and parses from there.
+// prints its human-readable progress banner to the same stream, with the
+// actual JSON array appended at the end. A first attempt at stripping this
+// (finding a line that's exactly "[") worked when tested by hand in a
+// browser-driven D1 console session, but failed in GitHub Actions' actual
+// non-interactive terminal: it grabbed the wrong "[" somewhere in the
+// banner text, producing a single malformed object with no real id/
+// award_id fields ("Checking 1 awards" / "award undefined" in the log).
+// Fixed with a format-agnostic approach: the real JSON block is always the
+// LAST thing wrangler prints, ending at the final "]" in the whole output.
+// Scanning backward from that final "]" and counting bracket depth finds
+// its true matching "[", regardless of how the surrounding banner text is
+// laid out or line-wrapped in any given terminal.
 function extractJson(rawOutput) {
-  const lines = rawOutput.split('\n');
-  const startIndex = lines.findIndex((line) => line.trim() === '[');
-  if (startIndex === -1) {
-    throw new Error(`Could not find start of JSON array in wrangler output. Raw output: ${rawOutput.slice(0, 500)}`);
+  const trimmed = rawOutput.trimEnd();
+  const lastBracket = trimmed.lastIndexOf(']');
+  if (lastBracket === -1) {
+    throw new Error(`Could not find a JSON array in wrangler output. Raw output: ${rawOutput.slice(0, 500)}`);
   }
-  const jsonText = lines.slice(startIndex).join('\n');
+  let depth = 0;
+  let startIndex = -1;
+  for (let i = lastBracket; i >= 0; i--) {
+    const ch = trimmed[i];
+    if (ch === ']') depth++;
+    else if (ch === '[') {
+      depth--;
+      if (depth === 0) {
+        startIndex = i;
+        break;
+      }
+    }
+  }
+  if (startIndex === -1) {
+    throw new Error(`Could not find matching "[" for the final "]" in wrangler output. Raw output: ${rawOutput.slice(0, 500)}`);
+  }
+  const jsonText = trimmed.slice(startIndex, lastBracket + 1);
   return JSON.parse(jsonText);
 }
 
