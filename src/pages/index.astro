@@ -367,7 +367,8 @@ function relativeTime(iso: string): string {
           '<p class="place">' + s.name + '</p>' +
           '<div class="stat-line"><span>Total funding</span><span>' + formatUsdFull(s.total) + '</span></div>' +
           '<div class="stat-line"><span>Awards tracked</span><span>' + s.award_count.toLocaleString() + '</span></div>' +
-          '<div class="stat-line"><span>Rank</span><span>#' + rank + ' of ' + STATE_STATS.length + '</span></div>';
+          '<div class="stat-line"><span>Rank</span><span>#' + rank + ' of ' + STATE_STATS.length + '</span></div>' +
+          '<a class="view-link" href="/state/' + s.slug + '">View full state page →</a>';
       }
 
       function makeDot(code) {
@@ -638,8 +639,8 @@ function relativeTime(iso: string): string {
   :global(.map-callout .stat-line){ display:flex; justify-content:space-between; font-size:13.5px; padding:8px 0; border-top:1px solid var(--paper-line); }
   :global(.map-callout .stat-line:first-of-type){ border-top:none; }
   :global(.map-callout .stat-line span:last-child){ font-family:'IBM Plex Mono', monospace; font-weight:600; }
-  .map-callout .view-link{ margin-top:14px; font-size:13px; font-weight:600; color:var(--verdigris-deep); text-decoration:none; }
-  .map-callout .view-link:hover{ text-decoration:underline; }
+  :global(.map-callout .view-link){ margin-top:14px; font-size:13px; font-weight:600; color:var(--verdigris-deep); text-decoration:none; display:inline-block; }
+  :global(.map-callout .view-link:hover){ text-decoration:underline; }
 
   .stream{ border:1px solid var(--paper-line); background:var(--paper-soft); }
   .stream__row{
