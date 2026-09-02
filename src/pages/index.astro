@@ -185,7 +185,7 @@ function relativeTime(iso: string): string {
     <div class="ledger__row">
       <div class="ledger__cell">
         <span class="ledger__num">{formatCompactUsd(totalAwarded)}</span>
-        <span class="ledger__label">Awarded, NIH grants</span>
+        <span class="ledger__label">Total awarded</span>
       </div>
       <div class="ledger__cell">
         <span class="ledger__num">{openOpportunitiesCount !== null ? openOpportunitiesCount.toLocaleString() : '—'}</span>
@@ -263,7 +263,7 @@ function relativeTime(iso: string): string {
 <section class="section" id="lookup">
   <div class="section__head">
     <h2 class="section__title">Recipient lookup</h2>
-    <p class="section__note">Search recipients of NIH grant awards.</p>
+    <p class="section__note">Search recipients of federal grant awards.</p>
   </div>
 
   <div class="lookup">
@@ -438,14 +438,14 @@ function relativeTime(iso: string): string {
 <section class="section">
   <div class="section__head">
     <h2 class="section__title">Recently awarded</h2>
-    <p class="section__note">NIH grant awards, most recent first, sourced from USASpending.gov.</p>
+    <p class="section__note">Grant awards, most recent first, sourced from USASpending.gov.</p>
   </div>
   {recentAwards.length > 0 ? (
     <div class="stream">
       {recentAwards.map((award) => (
         <div class="stream__row">
           <span class="stream__time">{relativeTime(award.award_date)}</span>
-          <span class="stream__agency">{award.agency_name ?? 'NIH'}</span>
+          <span class="stream__agency">{award.agency_name ?? 'Agency unknown'}</span>
           <span class="stream__amt">{formatFullUsd(award.amount)}</span>
           <span class="stream__recipient">{award.recipient_name}</span>
         </div>
