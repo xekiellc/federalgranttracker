@@ -300,6 +300,42 @@ export default {
       return new Response('Unauthorized', { status: 401 });
     }
 
+    // Debug mode: ?secret=...&debug=facets — runs a broad, agency-unfiltered
+    // search and scans the raw JSON response for any text mentioning
+    // "justice", returning each match with surrounding context. This is the
+    // same kind of live-data discovery that found every other agency's real
+    // subagency code (see AGENCY_SYNC_ORDER's comments) — used here to find
+    // NIJ's actual code after 'DOJ-NIJ' returned 0 real hits. Remove this
+    // block once NIJ's real code is confirmed and AGENCY_SYNC_ORDER is fixed.
+    if (url.searchParams.get('debug') === 'facets') {
+      try {
+        const response = await fetch(GRANTS_GOV_SEARCH_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows: 25, keyword: 'justice', oppStatuses: 'forecasted|posted' }),
+        });
+        const rawText = await response.text();
+        const matches = [];
+        const lower = rawText.toLowerCase();
+        let searchFrom = 0;
+        while (true) {
+          const idx = lower.indexOf('justice', searchFrom);
+          if (idx === -1) break;
+          matches.push(rawText.slice(Math.max(0, idx - 120), idx + 120));
+          searchFrom = idx + 7;
+          if (matches.length >= 30) break; // safety cap
+        }
+        return new Response(JSON.stringify({ matchCount: matches.length, matches }, null, 2), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err.message || err) }, null, 2), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 500,
+        });
+      }
+    }
+
     const result = await runSync(env);
     return new Response(JSON.stringify(result, null, 2), {
       headers: { 'Content-Type': 'application/json' },
