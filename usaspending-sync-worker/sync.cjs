@@ -12,30 +12,29 @@
 // (no Cloudflare Workers binding involved at all).
 //
 // UPDATE: the initial version only ever fetched page 1 (100 rows) with no
-// pagination — real NIH award volume is far larger (a single major
-// recipient like Cleveland Clinic alone can have well over 100 real
-// awards), so the 55-recipient dataset from the first run was badly
-// incomplete, not a full picture. Added pagination (looping pages until
-// exhausted or a safety cap) — same root pattern as the Grants.gov sync's
-// row-cap bug fixed earlier tonight. Also widened the recipient slug
-// truncation limit, since merging distinct real organizations under a
-// truncation-collided slug would now be a much likelier silent risk at
-// this larger scale.
+// pagination — real NIH award volume is far larger, so pagination was
+// added (looping pages until exhausted or a safety cap).
 //
 // UPDATE 2: now captures CFDA number and place-of-performance state on
-// every award — confirmed live and working (4,938 of 4,995 NIH awards
-// successfully matched to opportunities via CFDA + agency, see
-// match-opportunities.cjs for the matching logic itself).
+// every award — confirmed live and working via the CFDA-based matching job.
 //
 // UPDATE 3: expanded from NIH-only to all 6 tracked agencies (USDA, DOD,
-// DOE, NSF, HHS, NIH). NIH is a sub-agency of HHS, not a standalone
-// department — querying HHS at the top level would re-return every NIH
-// award nested inside it, and writing those under agency_id=HHS would
-// silently overwrite the correct agency_id=NIH already set by the
-// dedicated NIH query, breaking the matching job's agency_id join.
-// The HHS query explicitly skips any result whose "Awarding Sub Agency"
-// is "National Institutes of Health" for exactly this reason — those
-// awards are already covered by the NIH query, which runs first.
+// DOE, NSF, HHS, NIH), with HHS explicitly excluding NIH-attributed
+// results to avoid double-counting (NIH is a sub-agency of HHS).
+//
+// UPDATE 4: two real problems surfaced on the first live 6-agency run.
+// (1) USASpending's WAF blocked the run partway through DOE with a
+// "Web Page Blocked!" response — near-certainly triggered by ~250
+// requests fired back-to-back with no delay across 5 agencies. Fixed by
+// adding a delay between page requests and a one-time retry-with-backoff
+// on a failed page. (2) Far more importantly: the script fetched every
+// agency into memory first and only wrote to D1 once ALL agencies
+// succeeded — so DOE's single failure silently discarded NIH's, HHS's,
+// USDA's, and DOD's already-fetched data (20,000 real awards fetched,
+// zero written). Restructured so each agency's data is written to D1
+// immediately after that agency's fetch completes, independent of
+// whether later agencies succeed or fail — one agency's WAF block or
+// network error can no longer cost the others their sync.
 //
 // NOTE: funding_opportunity_number is still NOT populated by this script.
 // That field only comes from USASpending's per-award detail endpoint, not
@@ -51,6 +50,8 @@ const os = require('os');
 const USASPENDING_SEARCH_URL = 'https://api.usaspending.gov/api/v2/search/spending_by_award/';
 const D1_DATABASE_NAME = 'federalgranttracker';
 const GRANT_AWARD_TYPE_CODES = ['02', '03', '04', '05'];
+const PAGE_DELAY_MS = 400; // throttle between page requests to avoid tripping USASpending's WAF
+const RETRY_DELAY_MS = 5000; // longer pause before a single retry attempt on a failed page
 
 // Mirrors the 6 agencies tracked by the Grants.gov sync. NIH is queried as
 // its own subtier entity (matches agencies.code = 'NIH' in the schema);
@@ -64,6 +65,10 @@ const AGENCY_CONFIGS = [
   { code: 'DOE', tier: 'toptier', name: 'Department of Energy', excludeSubAgency: null },
   { code: 'NSF', tier: 'toptier', name: 'National Science Foundation', excludeSubAgency: null },
 ];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function currentFiscalYear() {
   const now = new Date();
@@ -116,6 +121,33 @@ function parseAward(result, agencyCode) {
   };
 }
 
+// Fetches one page, with a single retry after a longer backoff if the
+// first attempt fails — covers transient blocks/errors (like a WAF trip)
+// without silently retrying forever.
+async function fetchPageWithRetry(requestBody, agencyCode, page, attempt = 1) {
+  const response = await fetch(USASPENDING_SEARCH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const bodyText = await response.text().catch(() => '');
+    if (attempt < 2) {
+      console.log(`  ${agencyCode} page ${page}: request failed (attempt ${attempt}), waiting ${RETRY_DELAY_MS}ms and retrying once...`);
+      await sleep(RETRY_DELAY_MS);
+      return fetchPageWithRetry(requestBody, agencyCode, page, attempt + 1);
+    }
+    throw new Error(`USASpending request failed for ${agencyCode} on page ${page}: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
+  }
+
+  return response.json();
+}
+
 async function fetchAwardsForAgency(agencyConfig) {
   const fy = currentFiscalYear();
   const { start, end } = fiscalYearRange(fy);
@@ -159,22 +191,7 @@ async function fetchAwardsForAgency(agencyConfig) {
       order: 'desc',
     };
 
-    const response = await fetch(USASPENDING_SEARCH_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => '');
-      throw new Error(`USASpending request failed for ${agencyConfig.code} on page ${page}: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
-    }
-
-    const json = await response.json();
+    const json = await fetchPageWithRetry(requestBody, agencyConfig.code, page);
     const results = json?.results;
     if (!Array.isArray(results)) {
       throw new Error(`Unexpected USASpending response shape for ${agencyConfig.code} on page ${page}: no results array found`);
@@ -192,6 +209,7 @@ async function fetchAwardsForAgency(agencyConfig) {
 
     if (results.length < PAGE_SIZE) break; // last page reached
     page++;
+    await sleep(PAGE_DELAY_MS); // throttle to avoid tripping USASpending's WAF
   }
 
   if (skippedCount > 0) {
@@ -201,24 +219,11 @@ async function fetchAwardsForAgency(agencyConfig) {
   return allResults.map((r) => parseAward(r, agencyConfig.code));
 }
 
-async function fetchAllAwards() {
-  let allAwards = [];
-  for (const agencyConfig of AGENCY_CONFIGS) {
-    console.log(`Fetching ${agencyConfig.code}...`);
-    const agencyAwards = await fetchAwardsForAgency(agencyConfig);
-    console.log(`${agencyConfig.code}: ${agencyAwards.length} awards fetched.`);
-    allAwards = allAwards.concat(agencyAwards);
-  }
-  return allAwards;
-}
-
 // Builds one batched SQL file: an upsert for the recipient, then an upsert
 // for the award (using subqueries to resolve agency_id/recipient_id/
 // place_of_performance_state_id, so no separate round-trip lookups are
 // needed before writing). opportunity_id and match_confidence are
-// deliberately NOT set here — that's the separate matching job's job,
-// run after this sync completes, so a bug in matching logic can never
-// corrupt the award data itself.
+// deliberately NOT set here — that's the separate matching job's job.
 function buildSql(awards) {
   const statements = [];
 
@@ -280,37 +285,66 @@ function recordSyncRun(status, recordsProcessed, errorMessage) {
   }
 }
 
-async function main() {
-  let awards;
-  try {
-    awards = await fetchAllAwards();
-  } catch (err) {
-    console.error('Fetch failed:', err.message);
-    recordSyncRun('failed', 0, err.message);
-    process.exit(1);
-  }
-
+// Writes one agency's awards to D1 immediately, so a later agency's
+// failure can never discard an earlier agency's already-fetched data.
+function writeAgencyAwards(agencyCode, awards) {
   const { sql, processed } = buildSql(awards);
-
   if (processed === 0) {
-    console.log('No usable award records this run.');
-    recordSyncRun('success', 0, null);
-    return;
+    console.log(`${agencyCode}: no usable award records this run.`);
+    return 0;
   }
 
-  const tmpFile = path.join(os.tmpdir(), `usaspending-sync-${Date.now()}.sql`);
+  const tmpFile = path.join(os.tmpdir(), `usaspending-sync-${agencyCode}-${Date.now()}.sql`);
   fs.writeFileSync(tmpFile, sql);
-
   try {
     runD1File(tmpFile);
-    console.log(`Synced ${processed} awards across ${AGENCY_CONFIGS.length} agencies.`);
-    recordSyncRun('success', processed, null);
-  } catch (err) {
-    console.error('D1 write failed:', err.message);
-    recordSyncRun('failed', 0, err.message);
-    process.exit(1);
+    console.log(`${agencyCode}: synced ${processed} awards.`);
+    return processed;
   } finally {
     fs.unlinkSync(tmpFile);
+  }
+}
+
+async function main() {
+  let totalProcessed = 0;
+  const agencyResults = [];
+
+  for (const agencyConfig of AGENCY_CONFIGS) {
+    console.log(`Fetching ${agencyConfig.code}...`);
+
+    let awards;
+    try {
+      awards = await fetchAwardsForAgency(agencyConfig);
+      console.log(`${agencyConfig.code}: ${awards.length} awards fetched.`);
+    } catch (err) {
+      console.error(`${agencyConfig.code} fetch failed:`, err.message);
+      agencyResults.push(`${agencyConfig.code}: fetch failed — ${err.message}`);
+      continue; // move on to the next agency rather than aborting the whole run
+    }
+
+    try {
+      const processed = writeAgencyAwards(agencyConfig.code, awards);
+      agencyResults.push(`${agencyConfig.code}: ${processed} synced`);
+      totalProcessed += processed;
+    } catch (err) {
+      console.error(`${agencyConfig.code}: D1 write failed:`, err.message);
+      agencyResults.push(`${agencyConfig.code}: write failed — ${err.message}`);
+    }
+  }
+
+  const summary = agencyResults.join(' | ');
+  console.log(`Run summary: ${summary}`);
+  console.log(`Total synced this run: ${totalProcessed} awards.`);
+
+  const anyIssue = agencyResults.some((r) => r.includes('failed'));
+  recordSyncRun(
+    totalProcessed > 0 ? 'success' : 'failed',
+    totalProcessed,
+    anyIssue ? summary : null
+  );
+
+  if (totalProcessed === 0) {
+    process.exit(1);
   }
 }
 
