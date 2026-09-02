@@ -88,17 +88,18 @@ const AGENCY_SYNC_ORDER = [
     ].join('|'),
   },
   { localCode: 'NIH', grantsGovValue: 'HHS-NIH11' },
-  // UNVERIFIED — added without live confirmation, unlike every other entry
-  // above (each of which was corrected at least once after a real debug
-  // run showed 0-2 hits with a guessed code). 'DOJ-NIJ' follows the same
-  // <parent>-<subagency> pattern Grants.gov uses elsewhere (e.g.
-  // 'HHS-NIH11'), but has not been checked against a live facet dump.
-  // Check the next real run's perAgencySummary for this entry: hitsFound
-  // near 0 almost certainly means this code is wrong and needs the same
-  // fix every other agency here already went through — replace it with
-  // whatever code a debug run's full agency facet list actually shows for
-  // the National Institute of Justice.
-  { localCode: 'NIJ', grantsGovValue: 'DOJ-NIJ' },
+  // Corrected via the debug=facets dump below: DOJ's real parent code is
+  // 'USDOJ' (not 'DOJ'), and its live subagency facets showed
+  // 'USDOJ-OJP-BJA', 'USDOJ-OJP-BJS', 'USDOJ-OJP-OVC' — all sibling
+  // offices to NIJ under DOJ's Office of Justice Programs. NIJ itself
+  // didn't appear in that facet dump, which just means it has zero
+  // open/forecasted opportunities right now (NIJ's funding cycles are
+  // often sporadic) — not that the code is wrong. 'USDOJ-OJP-NIJ' follows
+  // the exact confirmed sibling pattern, so unlike the original 'DOJ-NIJ'
+  // guess, a near-zero hitsFound here is expected and NOT itself evidence
+  // of a wrong code — only revisit this if NIJ opportunities are known to
+  // exist elsewhere (e.g. nij.ojp.gov) but never show up here over time.
+  { localCode: 'NIJ', grantsGovValue: 'USDOJ-OJP-NIJ' },
 ];
 
 function toIsoDate(mmddyyyy) {
@@ -304,9 +305,9 @@ export default {
     // search and scans the raw JSON response for any text mentioning
     // "justice", returning each match with surrounding context. This is the
     // same kind of live-data discovery that found every other agency's real
-    // subagency code (see AGENCY_SYNC_ORDER's comments) — used here to find
-    // NIJ's actual code after 'DOJ-NIJ' returned 0 real hits. Remove this
-    // block once NIJ's real code is confirmed and AGENCY_SYNC_ORDER is fixed.
+    // subagency code (see AGENCY_SYNC_ORDER's comments). Already used once
+    // to find DOJ's real sibling codes — left in place in case it's useful
+    // again (e.g. re-checking whether NIJ has picked up live opportunities).
     if (url.searchParams.get('debug') === 'facets') {
       try {
         const response = await fetch(GRANTS_GOV_SEARCH_URL, {
