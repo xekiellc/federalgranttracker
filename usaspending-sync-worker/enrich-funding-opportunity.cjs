@@ -151,6 +151,16 @@ async function main() {
   let rows;
   try {
     const rawOutput = runD1Query(selectSql, true);
+    // TEMPORARY DEBUG: two prior attempts at extracting JSON from wrangler's
+    // --json output both produced the same wrong result (a single
+    // malformed row with no real id/award_id), which means the actual
+    // shape of wrangler's output in this real CI environment is different
+    // from what both attempts assumed. Dumping it in full so the next fix
+    // is based on real evidence instead of a third guess.
+    console.log('DEBUG — raw wrangler output for the SELECT query:');
+    console.log('--- START RAW OUTPUT ---');
+    console.log(rawOutput);
+    console.log('--- END RAW OUTPUT ---');
     const parsed = extractJson(rawOutput);
     rows = parsed?.[0]?.results ?? [];
   } catch (err) {
