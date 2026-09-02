@@ -22,19 +22,28 @@
 // DOE, NSF, HHS, NIH), with HHS explicitly excluding NIH-attributed
 // results to avoid double-counting (NIH is a sub-agency of HHS).
 //
-// UPDATE 4: two real problems surfaced on the first live 6-agency run.
-// (1) USASpending's WAF blocked the run partway through DOE with a
-// "Web Page Blocked!" response — near-certainly triggered by ~250
-// requests fired back-to-back with no delay across 5 agencies. Fixed by
-// adding a delay between page requests and a one-time retry-with-backoff
-// on a failed page. (2) Far more importantly: the script fetched every
-// agency into memory first and only wrote to D1 once ALL agencies
-// succeeded — so DOE's single failure silently discarded NIH's, HHS's,
-// USDA's, and DOD's already-fetched data (20,000 real awards fetched,
-// zero written). Restructured so each agency's data is written to D1
-// immediately after that agency's fetch completes, independent of
-// whether later agencies succeed or fail — one agency's WAF block or
-// network error can no longer cost the others their sync.
+// UPDATE 4: fixed a total-loss failure mode — one agency's fetch failing
+// was discarding every other agency's already-fetched data, since writes
+// only happened after ALL agencies succeeded. Restructured so each
+// agency's data writes to D1 immediately after that agency's own fetch
+// completes. Also added a per-page delay and a one-time retry with
+// backoff on a failed page, since USASpending's WAF appeared to block the
+// run (a "Web Page Blocked!" response) after ~250 rapid-fire requests.
+//
+// UPDATE 5: two live runs both saw DOE specifically fail on page 50 of 50
+// — same page both times, even after the retry from UPDATE 4 also failed.
+// That consistency suggested either (a) DOE's real volume sits right at a
+// boundary that trips something every time, or (b) cumulative request
+// count across the whole run (DOE is 5th of 6 agencies) crosses some WAF
+// threshold regardless of which agency is being fetched at that point —
+// supported by NSF (6th agency) succeeding once a longer pause happened
+// to fall before it. Two changes: (1) fetchAwardsForAgency() no longer
+// discards an agency's data when a later page fails — it now returns
+// whatever was successfully fetched before the failure, so DOE's real
+// 4,900 rows from pages 1-49 stop being thrown away over page 50 alone.
+// (2) Added a pause between agencies (not just between pages), to test
+// whether spacing out the *whole run* reduces cumulative WAF pressure,
+// not just per-agency page pressure.
 //
 // NOTE: funding_opportunity_number is still NOT populated by this script.
 // That field only comes from USASpending's per-award detail endpoint, not
@@ -50,7 +59,8 @@ const os = require('os');
 const USASPENDING_SEARCH_URL = 'https://api.usaspending.gov/api/v2/search/spending_by_award/';
 const D1_DATABASE_NAME = 'federalgranttracker';
 const GRANT_AWARD_TYPE_CODES = ['02', '03', '04', '05'];
-const PAGE_DELAY_MS = 400; // throttle between page requests to avoid tripping USASpending's WAF
+const PAGE_DELAY_MS = 400; // throttle between page requests within one agency
+const AGENCY_DELAY_MS = 8000; // throttle between agencies, to ease cumulative WAF pressure
 const RETRY_DELAY_MS = 5000; // longer pause before a single retry attempt on a failed page
 
 // Mirrors the 6 agencies tracked by the Grants.gov sync. NIH is queried as
@@ -122,32 +132,41 @@ function parseAward(result, agencyCode) {
 }
 
 // Fetches one page, with a single retry after a longer backoff if the
-// first attempt fails — covers transient blocks/errors (like a WAF trip)
-// without silently retrying forever.
+// first attempt fails. Returns null (rather than throwing) if both
+// attempts fail — the caller decides how to handle a failed page without
+// losing pages that already succeeded.
 async function fetchPageWithRetry(requestBody, agencyCode, page, attempt = 1) {
-  const response = await fetch(USASPENDING_SEARCH_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
-    },
-    body: JSON.stringify(requestBody),
-  });
+  let response;
+  try {
+    response = await fetch(USASPENDING_SEARCH_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'FederalGrantTracker/1.0 (+https://federalgranttracker.com)',
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (err) {
+    response = null;
+  }
 
-  if (!response.ok) {
-    const bodyText = await response.text().catch(() => '');
+  if (!response || !response.ok) {
     if (attempt < 2) {
       console.log(`  ${agencyCode} page ${page}: request failed (attempt ${attempt}), waiting ${RETRY_DELAY_MS}ms and retrying once...`);
       await sleep(RETRY_DELAY_MS);
       return fetchPageWithRetry(requestBody, agencyCode, page, attempt + 1);
     }
-    throw new Error(`USASpending request failed for ${agencyCode} on page ${page}: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
+    console.log(`  ${agencyCode} page ${page}: failed after retry — stopping this agency here, keeping pages already fetched.`);
+    return null;
   }
 
   return response.json();
 }
 
+// Returns { awards, incomplete, stoppedAtPage } — incomplete=true means a
+// page failed after retrying, so this agency's data reflects everything
+// fetched successfully up to that point, not the agency's real total.
 async function fetchAwardsForAgency(agencyConfig) {
   const fy = currentFiscalYear();
   const { start, end } = fiscalYearRange(fy);
@@ -164,6 +183,7 @@ async function fetchAwardsForAgency(agencyConfig) {
   let allResults = [];
   let page = 1;
   let skippedCount = 0;
+  let incomplete = false;
 
   while (page <= MAX_PAGES) {
     const requestBody = {
@@ -192,9 +212,16 @@ async function fetchAwardsForAgency(agencyConfig) {
     };
 
     const json = await fetchPageWithRetry(requestBody, agencyConfig.code, page);
+    if (json === null) {
+      incomplete = true;
+      break; // keep whatever was fetched on prior pages; stop here rather than losing it all
+    }
+
     const results = json?.results;
     if (!Array.isArray(results)) {
-      throw new Error(`Unexpected USASpending response shape for ${agencyConfig.code} on page ${page}: no results array found`);
+      console.log(`  ${agencyConfig.code} page ${page}: unexpected response shape (no results array) — stopping this agency here.`);
+      incomplete = true;
+      break;
     }
 
     let pageResults = results;
@@ -216,7 +243,11 @@ async function fetchAwardsForAgency(agencyConfig) {
     console.log(`  ${agencyConfig.code}: skipped ${skippedCount} results belonging to ${agencyConfig.excludeSubAgency} (covered by its own dedicated query)`);
   }
 
-  return allResults.map((r) => parseAward(r, agencyConfig.code));
+  return {
+    awards: allResults.map((r) => parseAward(r, agencyConfig.code)),
+    incomplete,
+    stoppedAtPage: incomplete ? page : null,
+  };
 }
 
 // Builds one batched SQL file: an upsert for the recipient, then an upsert
@@ -309,26 +340,36 @@ async function main() {
   let totalProcessed = 0;
   const agencyResults = [];
 
-  for (const agencyConfig of AGENCY_CONFIGS) {
+  for (let i = 0; i < AGENCY_CONFIGS.length; i++) {
+    const agencyConfig = AGENCY_CONFIGS[i];
     console.log(`Fetching ${agencyConfig.code}...`);
 
-    let awards;
+    let fetchResult;
     try {
-      awards = await fetchAwardsForAgency(agencyConfig);
-      console.log(`${agencyConfig.code}: ${awards.length} awards fetched.`);
+      fetchResult = await fetchAwardsForAgency(agencyConfig);
+      const note = fetchResult.incomplete ? ` (stopped early at page ${fetchResult.stoppedAtPage} — kept everything fetched before that)` : '';
+      console.log(`${agencyConfig.code}: ${fetchResult.awards.length} awards fetched${note}.`);
     } catch (err) {
       console.error(`${agencyConfig.code} fetch failed:`, err.message);
       agencyResults.push(`${agencyConfig.code}: fetch failed — ${err.message}`);
-      continue; // move on to the next agency rather than aborting the whole run
+      continue;
     }
 
     try {
-      const processed = writeAgencyAwards(agencyConfig.code, awards);
-      agencyResults.push(`${agencyConfig.code}: ${processed} synced`);
+      const processed = writeAgencyAwards(agencyConfig.code, fetchResult.awards);
+      const partialNote = fetchResult.incomplete ? ' (partial)' : '';
+      agencyResults.push(`${agencyConfig.code}: ${processed} synced${partialNote}`);
       totalProcessed += processed;
     } catch (err) {
       console.error(`${agencyConfig.code}: D1 write failed:`, err.message);
       agencyResults.push(`${agencyConfig.code}: write failed — ${err.message}`);
+    }
+
+    // Pause between agencies (not just between pages) — testing whether
+    // cumulative request volume across the whole run, not just one
+    // agency's page count, is what's tripping USASpending's WAF.
+    if (i < AGENCY_CONFIGS.length - 1) {
+      await sleep(AGENCY_DELAY_MS);
     }
   }
 
