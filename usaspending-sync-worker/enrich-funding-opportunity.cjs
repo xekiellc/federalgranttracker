@@ -33,6 +33,7 @@ const os = require('os');
 
 const USASPENDING_AWARD_DETAIL_URL = 'https://api.usaspending.gov/api/v2/awards/';
 const D1_DATABASE_NAME = 'federalgranttracker';
+const D1_DATABASE_ID = 'ab74e758-2416-47f4-8dbe-4d44b540444b';
 const BATCH_SIZE = 150; // well under the ~250-request WAF threshold observed in sync.cjs
 const REQUEST_DELAY_MS = 500;
 const RETRY_DELAY_MS = 5000;
@@ -54,55 +55,39 @@ function runD1File(sqlFilePath) {
   );
 }
 
-function runD1Query(sql, jsonOutput = false) {
-  const tmpFile = path.join(os.tmpdir(), `enrich-query-${Date.now()}-${Math.random().toString(36).slice(2)}.sql`);
-  fs.writeFileSync(tmpFile, sql);
-  try {
-    const args = ['d1', 'execute', D1_DATABASE_NAME, '--remote', '--yes', `--file=${tmpFile}`];
-    if (jsonOutput) args.push('--json');
-    return execFileSync('wrangler', args, { encoding: 'utf-8' });
-  } finally {
-    fs.unlinkSync(tmpFile);
-  }
-}
+// Reads actual row data via Cloudflare's D1 HTTP API directly, instead of
+// through `wrangler d1 execute`. Confirmed live (with full raw output
+// logged) that `wrangler d1 execute --file --remote --json` never returns
+// real row data for a SELECT — it only ever returns a generic per-statement
+// execution-stats object ("Total queries executed", "Rows read", etc.),
+// for reads and writes alike. That's a real constraint of the CLI in this
+// mode, not a parsing bug — two earlier attempts at "fixing the JSON
+// extraction" were solving a problem that didn't exist, since there was
+// never real data in the output to find. Cloudflare's documented D1 REST
+// API (POST .../d1/database/{id}/query) does return real rows, so reads go
+// through that instead. Writes still go through wrangler (runD1File above),
+// since that's been reliable all along — this only replaces the read path.
+async function queryD1(sql) {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${D1_DATABASE_ID}/query`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ sql }),
+  });
 
-// wrangler's --json flag does NOT produce pure JSON output — it still
-// prints its human-readable progress banner to the same stream, with the
-// actual JSON array appended at the end. A first attempt at stripping this
-// (finding a line that's exactly "[") worked when tested by hand in a
-// browser-driven D1 console session, but failed in GitHub Actions' actual
-// non-interactive terminal: it grabbed the wrong "[" somewhere in the
-// banner text, producing a single malformed object with no real id/
-// award_id fields ("Checking 1 awards" / "award undefined" in the log).
-// Fixed with a format-agnostic approach: the real JSON block is always the
-// LAST thing wrangler prints, ending at the final "]" in the whole output.
-// Scanning backward from that final "]" and counting bracket depth finds
-// its true matching "[", regardless of how the surrounding banner text is
-// laid out or line-wrapped in any given terminal.
-function extractJson(rawOutput) {
-  const trimmed = rawOutput.trimEnd();
-  const lastBracket = trimmed.lastIndexOf(']');
-  if (lastBracket === -1) {
-    throw new Error(`Could not find a JSON array in wrangler output. Raw output: ${rawOutput.slice(0, 500)}`);
+  if (!response.ok) {
+    const bodyText = await response.text().catch(() => '');
+    throw new Error(`D1 API request failed: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
   }
-  let depth = 0;
-  let startIndex = -1;
-  for (let i = lastBracket; i >= 0; i--) {
-    const ch = trimmed[i];
-    if (ch === ']') depth++;
-    else if (ch === '[') {
-      depth--;
-      if (depth === 0) {
-        startIndex = i;
-        break;
-      }
-    }
+
+  const json = await response.json();
+  if (!json.success) {
+    throw new Error(`D1 API returned success:false — ${JSON.stringify(json.errors || json).slice(0, 300)}`);
   }
-  if (startIndex === -1) {
-    throw new Error(`Could not find matching "[" for the final "]" in wrangler output. Raw output: ${rawOutput.slice(0, 500)}`);
-  }
-  const jsonText = trimmed.slice(startIndex, lastBracket + 1);
-  return JSON.parse(jsonText);
+  return json.result?.[0]?.results ?? [];
 }
 
 // Fetches one award's detail, with a single retry after backoff on failure.
@@ -150,19 +135,7 @@ async function main() {
 
   let rows;
   try {
-    const rawOutput = runD1Query(selectSql, true);
-    // TEMPORARY DEBUG: two prior attempts at extracting JSON from wrangler's
-    // --json output both produced the same wrong result (a single
-    // malformed row with no real id/award_id), which means the actual
-    // shape of wrangler's output in this real CI environment is different
-    // from what both attempts assumed. Dumping it in full so the next fix
-    // is based on real evidence instead of a third guess.
-    console.log('DEBUG — raw wrangler output for the SELECT query:');
-    console.log('--- START RAW OUTPUT ---');
-    console.log(rawOutput);
-    console.log('--- END RAW OUTPUT ---');
-    const parsed = extractJson(rawOutput);
-    rows = parsed?.[0]?.results ?? [];
+    rows = await queryD1(selectSql);
   } catch (err) {
     console.error('Failed to select batch of awards:', err.message);
     process.exit(1);
