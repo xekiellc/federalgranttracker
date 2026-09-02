@@ -66,6 +66,23 @@ function runD1Query(sql, jsonOutput = false) {
   }
 }
 
+// wrangler's --json flag does NOT produce pure JSON output — it still
+// prints its human-readable progress banner ("├ Checking if file needs
+// uploading", "🌀 Starting import...", etc.) to the same stream, with the
+// actual JSON array appended at the end. Every other script in this repo
+// that captures --json output only ever logs it raw without parsing, so
+// this was a latent bug nobody had hit yet. Finds the line that is
+// exactly "[" (the start of wrangler's JSON array) and parses from there.
+function extractJson(rawOutput) {
+  const lines = rawOutput.split('\n');
+  const startIndex = lines.findIndex((line) => line.trim() === '[');
+  if (startIndex === -1) {
+    throw new Error(`Could not find start of JSON array in wrangler output. Raw output: ${rawOutput.slice(0, 500)}`);
+  }
+  const jsonText = lines.slice(startIndex).join('\n');
+  return JSON.parse(jsonText);
+}
+
 // Fetches one award's detail, with a single retry after backoff on failure.
 // Returns { ok: true, number: string|null } on a successful request (number
 // may legitimately be null), or { ok: false } if both attempts failed.
@@ -112,7 +129,7 @@ async function main() {
   let rows;
   try {
     const rawOutput = runD1Query(selectSql, true);
-    const parsed = JSON.parse(rawOutput);
+    const parsed = extractJson(rawOutput);
     rows = parsed?.[0]?.results ?? [];
   } catch (err) {
     console.error('Failed to select batch of awards:', err.message);
