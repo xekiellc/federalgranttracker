@@ -14,6 +14,7 @@ let agenciesTrackedCount: number | null = null;
 let recipientsCount: number | null = null;
 let totalAwarded: number | null = null;
 let newestOpportunity: {
+  id: number;
   title: string;
   status: string;
   posted_date: string | null;
@@ -27,6 +28,25 @@ let recentAwards: {
   amount: number;
   award_date: string;
   agency_name: string | null;
+}[] = [];
+// Awards linked to the newest opportunity via awards.opportunity_id, populated
+// by the CFDA-matching job (usaspending-sync-worker/match-opportunities.cjs).
+// match_confidence is surfaced honestly rather than presenting an inferred
+// match as identical to an exact one.
+let opportunityAwards: {
+  recipient_name: string;
+  amount: number;
+  match_confidence: string | null;
+}[] = [];
+// State-by-state totals, sourced from awards.place_of_performance_state_id.
+// A state with no rows here genuinely has no tracked awards yet — not
+// hidden, just shown as zero rather than invented.
+let stateStats: {
+  code: string;
+  name: string;
+  slug: string;
+  award_count: number;
+  total: number;
 }[] = [];
 try {
   const db = (env as any)?.DB;
@@ -56,7 +76,7 @@ try {
 
   newestOpportunity = await db
     .prepare(`
-      SELECT o.title, o.status, o.posted_date, o.close_date, o.cfda_number, o.slug,
+      SELECT o.id, o.title, o.status, o.posted_date, o.close_date, o.cfda_number, o.slug,
              a.name as agency_name
       FROM opportunities o
       LEFT JOIN agencies a ON o.agency_id = a.id
@@ -77,6 +97,32 @@ try {
     `)
     .all();
   recentAwards = (recentAwardsResult?.results as any[]) ?? [];
+
+  if (newestOpportunity) {
+    const opportunityAwardsResult = await db
+      .prepare(`
+        SELECT r.name as recipient_name, a.amount, a.match_confidence
+        FROM awards a
+        JOIN recipients r ON a.recipient_id = r.id
+        WHERE a.opportunity_id = ?
+        ORDER BY a.amount DESC
+        LIMIT 5
+      `)
+      .bind((newestOpportunity as any).id)
+      .all();
+    opportunityAwards = (opportunityAwardsResult?.results as any[]) ?? [];
+  }
+
+  const stateStatsResult = await db
+    .prepare(`
+      SELECT s.code, s.name, s.slug, COUNT(a.id) as award_count, SUM(a.amount) as total
+      FROM awards a
+      JOIN states s ON a.place_of_performance_state_id = s.id
+      GROUP BY s.id
+      ORDER BY total DESC
+    `)
+    .all();
+  stateStats = (stateStatsResult?.results as any[]) ?? [];
 } catch (err) {
   // If D1 is unreachable, or the runtime binding isn't where we expect it,
   // fall back to nulls rather than crashing the homepage with a 500 — the
@@ -188,7 +234,23 @@ function relativeTime(iso: string): string {
       </div>
       <div class="record__side">
         <h4>Where it went last cycle</h4>
-        <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">Award history isn't tracked yet — this section goes live once the USASpending sync is built.</p>
+        {opportunityAwards.length > 0 ? (
+          <div>
+            {opportunityAwards.map((award) => (
+              <div class="past-award">
+                <span>
+                  {award.recipient_name}
+                  {award.match_confidence === 'cfda_inferred' ? (
+                    <span class="mono" style="font-size:10px; color:var(--ink-muted); display:block; margin-top:2px;">matched by CFDA number</span>
+                  ) : null}
+                </span>
+                <span>{formatFullUsd(award.amount)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6;">No awards have matched this specific opportunity yet — matching runs on CFDA number and agency, and not every award finds a match. This isn't necessarily the same as zero funding having gone out.</p>
+        )}
       </div>
     </div>
   ) : (
@@ -216,19 +278,161 @@ function relativeTime(iso: string): string {
 </section>
 
 <section class="section section--map" id="map">
-  <!-- State-level funding requires the `awards` table joined to `states` —
-       not built yet. Showing an honest not-available state rather than a
-       map filled with invented per-state dollar figures. -->
   <div class="section__head">
     <h2 class="section__title">Where the money goes</h2>
-    <p class="section__note">Funding by state will appear here once award data is available.</p>
+    <p class="section__note">State-by-state totals, based on where the funded work happens (place of performance), sourced from USASpending.gov.</p>
   </div>
-  <div class="map-panel" style="grid-template-columns:1fr;">
-    <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:32px; border-radius:2px; margin:0; text-align:center;">
-      State-by-state funding data isn't tracked yet — this map goes live once the USASpending.gov sync is built.
-    </p>
-  </div>
+  {stateStats.length > 0 ? (
+    <div class="map-panel">
+      <div class="map-stage">
+        <div class="metric-toggle" id="metricToggle">
+          <button type="button" class="active" data-metric="total">Total funding</button>
+          <button type="button" data-metric="award_count">Award count</button>
+        </div>
+        <div class="usmap" id="usmap"></div>
+        <div class="map-legend">
+          <span>Less</span>
+          <span class="grad"></span>
+          <span>More</span>
+          <span class="map-note" id="mapLegendNote">By total funding</span>
+        </div>
+      </div>
+      <div class="map-callout" id="mapCallout">
+        <p class="empty">Select a state to see its totals.</p>
+      </div>
+    </div>
+  ) : (
+    <div class="map-panel" style="grid-template-columns:1fr;">
+      <p class="empty" style="font-size:13.5px; color:var(--ink-muted); line-height:1.6; border:1px dashed var(--paper-line); padding:32px; border-radius:2px; margin:0; text-align:center;">
+        No state-by-state funding data has synced yet — this map fills in automatically once the USASpending sync captures place-of-performance data.
+      </p>
+    </div>
+  )}
 </section>
+
+{stateStats.length > 0 && (
+  <script define:vars={{ STATE_STATS: stateStats }}>
+    // State center coordinates as x/y percentages within the .usmap container
+    // (an equirectangular approximation over the continental US bounding box,
+    // lon -125..-66, lat 24..49). These are layout positions only, not data —
+    // a few crowded Northeast states are nudged slightly apart for legibility,
+    // same as any hand-tuned dot/tile map. AK and HI render in the fixed inset
+    // box instead, since their true coordinates fall far outside this canvas.
+    const STATE_COORDS = {
+      AL: [64.8, 65.2], AZ: [23.1, 58.8], AR: [55.3, 56.4], CA: [9.0, 47.2], CO: [33.1, 40.0],
+      CT: [89.5, 28.0], DE: [85.0, 41.0], FL: [72.2, 81.6], GA: [70.5, 65.6], ID: [17.6, 18.4],
+      IL: [60.7, 36.0], IN: [65.6, 36.4], IA: [53.4, 28.0], KS: [45.1, 42.0], KY: [67.3, 46.0],
+      LA: [55.9, 72.0], ME: [94.9, 14.4], MD: [81.0, 39.0], MA: [91.0, 25.0], MI: [67.1, 18.8],
+      MN: [52.0, 10.8], MS: [59.8, 65.2], MO: [55.1, 42.0], MT: [26.1, 8.0], NE: [42.7, 30.0],
+      NV: [14.2, 38.8], NH: [91.5, 20.0], NJ: [86.5, 34.5], NM: [32.0, 58.4], NY: [83.9, 24.4],
+      NC: [77.3, 53.6], ND: [41.5, 6.0], OH: [71.5, 34.8], OK: [46.6, 53.6], OR: [7.5, 20.0],
+      PA: [80.0, 32.4], RI: [92.0, 28.0], SC: [74.7, 60.4], SD: [42.0, 18.4], TN: [65.4, 52.4],
+      TX: [43.6, 70.0], UT: [22.5, 38.8], VT: [87.5, 19.0], VA: [78.1, 46.0], WA: [7.6, 6.4],
+      WV: [75.1, 41.6], WI: [59.5, 17.6], WY: [29.7, 24.0], DC: [82.5, 43.0],
+    };
+    const INSET_CODES = ['AK', 'HI'];
+
+    const mapEl = document.getElementById('usmap');
+    const calloutEl = document.getElementById('mapCallout');
+    const legendNoteEl = document.getElementById('mapLegendNote');
+    const toggleEl = document.getElementById('metricToggle');
+
+    if (mapEl && Array.isArray(STATE_STATS) && STATE_STATS.length > 0) {
+      const statsByCode = new Map(STATE_STATS.map((s) => [s.code, s]));
+      let metric = 'total';
+
+      function formatUsdCompact(n) {
+        if (n >= 1e9) return '$' + (n / 1e9).toFixed(1) + 'B';
+        if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+        return '$' + n.toLocaleString();
+      }
+      function formatUsdFull(n) { return '$' + n.toLocaleString(); }
+
+      function maxForMetric(m) {
+        let max = 0;
+        for (const s of STATE_STATS) { if (s[m] > max) max = s[m]; }
+        return max || 1;
+      }
+
+      function renderCallout(code) {
+        const s = statsByCode.get(code);
+        if (!s) {
+          calloutEl.innerHTML = '<p class="empty">No awards tracked yet for this state.</p>';
+          return;
+        }
+        const rank = STATE_STATS.findIndex((x) => x.code === code) + 1;
+        calloutEl.innerHTML =
+          '<h4>Selected state</h4>' +
+          '<p class="place">' + s.name + '</p>' +
+          '<div class="stat-line"><span>Total funding</span><span>' + formatUsdFull(s.total) + '</span></div>' +
+          '<div class="stat-line"><span>Awards tracked</span><span>' + s.award_count.toLocaleString() + '</span></div>' +
+          '<div class="stat-line"><span>Rank</span><span>#' + rank + ' of ' + STATE_STATS.length + '</span></div>';
+      }
+
+      function makeDot(code) {
+        const s = statsByCode.get(code);
+        const dot = document.createElement('div');
+        dot.className = 'usmap__dot' + (s ? '' : ' no-data');
+        dot.textContent = code;
+        if (s) {
+          const max = maxForMetric(metric);
+          const intensity = 0.18 + 0.75 * (s[metric] / max);
+          dot.style.background = 'rgba(79,156,130,' + intensity.toFixed(2) + ')';
+          dot.title = s.name + ' — ' + formatUsdCompact(s.total) + ', ' + s.award_count + ' award' + (s.award_count === 1 ? '' : 's');
+          dot.addEventListener('click', () => selectState(code));
+        } else {
+          dot.style.background = 'var(--paper-line-soft)';
+          dot.style.color = 'var(--ink-muted)';
+          dot.style.borderStyle = 'dashed';
+          dot.title = 'No awards tracked yet';
+        }
+        return dot;
+      }
+
+      function renderDots() {
+        mapEl.innerHTML = '';
+        for (const code of Object.keys(STATE_COORDS)) {
+          const dot = makeDot(code);
+          const [x, y] = STATE_COORDS[code];
+          dot.style.left = x + '%';
+          dot.style.top = y + '%';
+          mapEl.appendChild(dot);
+        }
+        const insetWrap = document.createElement('div');
+        insetWrap.className = 'usmap__inset';
+        for (const code of INSET_CODES) {
+          insetWrap.appendChild(makeDot(code));
+        }
+        mapEl.appendChild(insetWrap);
+      }
+
+      function selectState(code) {
+        document.querySelectorAll('.usmap__dot').forEach((d) => {
+          d.classList.toggle('selected', d.textContent === code);
+        });
+        renderCallout(code);
+      }
+
+      if (toggleEl) {
+        toggleEl.querySelectorAll('button').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            toggleEl.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+            metric = btn.dataset.metric;
+            renderDots();
+            if (legendNoteEl) {
+              legendNoteEl.textContent = metric === 'total' ? 'By total funding' : 'By award count';
+            }
+          });
+        });
+      }
+
+      renderDots();
+      selectState(STATE_STATS[0].code);
+    }
+  </script>
+)}
 
 <section class="section">
   <div class="section__head">
@@ -417,6 +621,8 @@ function relativeTime(iso: string): string {
   }
   .usmap__dot:hover{ transform:translate(-50%,-50%) scale(1.35); z-index:2; border-color:var(--ink); }
   .usmap__dot.selected{ outline:2px solid var(--wax); outline-offset:1px; z-index:3; }
+  .usmap__dot.no-data{ cursor:default; }
+  .usmap__dot.no-data:hover{ transform:translate(-50%,-50%); }
   .usmap__inset{ position:absolute; left:8px; bottom:8px; display:flex; gap:6px; padding:5px; border:1px dashed var(--paper-line); }
   .usmap__inset .usmap__dot{ position:static; transform:none; }
   .usmap__inset .usmap__dot:hover{ transform:scale(1.2); }
