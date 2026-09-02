@@ -1,0 +1,42 @@
+name: Enrich Funding Opportunity Numbers
+
+on:
+  schedule:
+    # Every 2 hours — a small throttled batch each run (150 awards),
+    # chipping through the backlog over many runs rather than trying to
+    # finish in one. See enrich-funding-opportunity.cjs for why.
+    - cron: '0 */2 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'usaspending-sync-worker/**'
+  workflow_dispatch: {}
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      - name: Enrich funding opportunity numbers
+        working-directory: usaspending-sync-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 27782793dc31aeede4bbbf95f2c26adc
+        run: node enrich-funding-opportunity.cjs
+
+      - name: Re-run matching (picks up any new exact matches)
+        working-directory: usaspending-sync-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 27782793dc31aeede4bbbf95f2c26adc
+        run: node match-opportunities.cjs
