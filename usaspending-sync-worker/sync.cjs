@@ -45,6 +45,10 @@
 // whether spacing out the *whole run* reduces cumulative WAF pressure,
 // not just per-agency page pressure.
 //
+// UPDATE 6: added NIJ (National Institute of Justice), queried as its own
+// subtier entity — same pattern as NIH under HHS, but without a separate
+// "whole DOJ" query, since only NIJ specifically was asked for.
+//
 // NOTE: funding_opportunity_number is still NOT populated by this script.
 // That field only comes from USASpending's per-award detail endpoint, not
 // the bulk search endpoint used here — left NULL honestly rather than
@@ -63,10 +67,13 @@ const PAGE_DELAY_MS = 400; // throttle between page requests within one agency
 const AGENCY_DELAY_MS = 8000; // throttle between agencies, to ease cumulative WAF pressure
 const RETRY_DELAY_MS = 5000; // longer pause before a single retry attempt on a failed page
 
-// Mirrors the 6 agencies tracked by the Grants.gov sync. NIH is queried as
-// its own subtier entity (matches agencies.code = 'NIH' in the schema);
-// HHS is queried at toptier but excludes anything tagged as NIH, since
-// NIH is nested inside HHS and is already covered by its own query above.
+// Mirrors the tracked agencies from the Grants.gov sync, plus NIJ. NIH and
+// NIJ are each queried as their own subtier entity (matches agencies.code
+// in the schema); HHS is queried at toptier but excludes anything tagged
+// as NIH, since NIH is nested inside HHS and is already covered by its
+// own query above. NIJ is nested inside DOJ, but DOJ itself isn't tracked
+// as a whole department here — same pattern as NIH/HHS, just without the
+// parent-department query, since only NIJ specifically was asked for.
 const AGENCY_CONFIGS = [
   { code: 'NIH', tier: 'subtier', name: 'National Institutes of Health', excludeSubAgency: null },
   { code: 'HHS', tier: 'toptier', name: 'Department of Health and Human Services', excludeSubAgency: 'National Institutes of Health' },
@@ -74,6 +81,7 @@ const AGENCY_CONFIGS = [
   { code: 'DOD', tier: 'toptier', name: 'Department of Defense', excludeSubAgency: null },
   { code: 'DOE', tier: 'toptier', name: 'Department of Energy', excludeSubAgency: null },
   { code: 'NSF', tier: 'toptier', name: 'National Science Foundation', excludeSubAgency: null },
+  { code: 'NIJ', tier: 'subtier', name: 'National Institute of Justice', excludeSubAgency: null },
 ];
 
 function sleep(ms) {
