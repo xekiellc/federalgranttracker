@@ -3,6 +3,11 @@ name: Deploy Site
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'sync-worker/**'
+      - 'usaspending-sync-worker/**'
+      - '.github/workflows/deploy-grants-gov-sync.yml'
+      - '.github/workflows/usaspending-sync.yml'
   workflow_dispatch: {}
 
 jobs:
