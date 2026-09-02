@@ -22,18 +22,26 @@
 // truncation-collided slug would now be a much likelier silent risk at
 // this larger scale.
 //
-// UPDATE 2: now requests CFDA number and place-of-performance state on
-// every award. Both columns exist in the schema, but after this ran live,
-// awards.cfda_number came back NULL on all 4,995 synced rows — meaning
-// either 'CFDA Number' isn't the literal field name USASpending's API
-// expects, or it's valid but shaped differently than a flat string
-// (USASpending renamed CFDA to "Assistance Listings" in 2022, and some
-// endpoints return that as an array of objects, not one string). Rather
-// than guess a second field name blind, this update adds a one-time debug
-// log of the raw first result object on page 1, so the next run's GitHub
-// Actions log shows the actual field names USASpending returns. Once we
-// see that output, parseAward() gets corrected to read the real field —
-// this debug line comes back out once that's confirmed.
+// UPDATE 2: now captures CFDA number and place-of-performance state on
+// every award — confirmed live and working (4,938 of 4,995 NIH awards
+// successfully matched to opportunities via CFDA + agency, see
+// match-opportunities.cjs for the matching logic itself).
+//
+// UPDATE 3: expanded from NIH-only to all 6 tracked agencies (USDA, DOD,
+// DOE, NSF, HHS, NIH). NIH is a sub-agency of HHS, not a standalone
+// department — querying HHS at the top level would re-return every NIH
+// award nested inside it, and writing those under agency_id=HHS would
+// silently overwrite the correct agency_id=NIH already set by the
+// dedicated NIH query, breaking the matching job's agency_id join.
+// The HHS query explicitly skips any result whose "Awarding Sub Agency"
+// is "National Institutes of Health" for exactly this reason — those
+// awards are already covered by the NIH query, which runs first.
+//
+// NOTE: funding_opportunity_number is still NOT populated by this script.
+// That field only comes from USASpending's per-award detail endpoint, not
+// the bulk search endpoint used here — left NULL honestly rather than
+// faked, per the "no fabricated data" rule. CFDA-based matching
+// ('cfda_inferred') is the real matching path.
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -43,6 +51,19 @@ const os = require('os');
 const USASPENDING_SEARCH_URL = 'https://api.usaspending.gov/api/v2/search/spending_by_award/';
 const D1_DATABASE_NAME = 'federalgranttracker';
 const GRANT_AWARD_TYPE_CODES = ['02', '03', '04', '05'];
+
+// Mirrors the 6 agencies tracked by the Grants.gov sync. NIH is queried as
+// its own subtier entity (matches agencies.code = 'NIH' in the schema);
+// HHS is queried at toptier but excludes anything tagged as NIH, since
+// NIH is nested inside HHS and is already covered by its own query above.
+const AGENCY_CONFIGS = [
+  { code: 'NIH', tier: 'subtier', name: 'National Institutes of Health', excludeSubAgency: null },
+  { code: 'HHS', tier: 'toptier', name: 'Department of Health and Human Services', excludeSubAgency: 'National Institutes of Health' },
+  { code: 'USDA', tier: 'toptier', name: 'Department of Agriculture', excludeSubAgency: null },
+  { code: 'DOD', tier: 'toptier', name: 'Department of Defense', excludeSubAgency: null },
+  { code: 'DOE', tier: 'toptier', name: 'Department of Energy', excludeSubAgency: null },
+  { code: 'NSF', tier: 'toptier', name: 'National Science Foundation', excludeSubAgency: null },
+];
 
 function currentFiscalYear() {
   const now = new Date();
@@ -73,7 +94,7 @@ function sqlEscape(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function parseAward(result) {
+function parseAward(result, agencyCode) {
   const awardId = result.generated_internal_id || result['Award ID'];
   const recipientName = result['Recipient Name'] || 'Unknown recipient';
   const amountRaw = result['Award Amount'];
@@ -84,6 +105,7 @@ function parseAward(result) {
 
   return {
     award_id: awardId,
+    agency_code: agencyCode,
     recipient_name: recipientName,
     recipient_slug: slugify(recipientName),
     amount: Number.isFinite(amount) ? amount : null,
@@ -94,27 +116,28 @@ function parseAward(result) {
   };
 }
 
-async function fetchNihAwards() {
+async function fetchAwardsForAgency(agencyConfig) {
   const fy = currentFiscalYear();
   const { start, end } = fiscalYearRange(fy);
 
   // USASpending's own documented max page size is 100 — raising `limit`
   // isn't an option, so real coverage requires looping through pages.
-  // Safety cap at 50 pages (5,000 awards) per run to keep this script's
-  // runtime bounded; if NIH's real total exceeds that, later runs will
-  // still catch up over time since every write is an idempotent upsert.
+  // Safety cap at 50 pages (5,000 awards) per agency per run to keep this
+  // script's runtime bounded; if a given agency's real total exceeds
+  // that, later runs will still catch up over time since every write is
+  // an idempotent upsert.
   const PAGE_SIZE = 100;
   const MAX_PAGES = 50;
 
   let allResults = [];
   let page = 1;
-  let loggedDebugSample = false;
+  let skippedCount = 0;
 
   while (page <= MAX_PAGES) {
     const requestBody = {
       filters: {
         award_type_codes: GRANT_AWARD_TYPE_CODES,
-        agencies: [{ type: 'awarding', tier: 'subtier', name: 'National Institutes of Health' }],
+        agencies: [{ type: 'awarding', tier: agencyConfig.tier, name: agencyConfig.name }],
         time_period: [{ start_date: start, end_date: end }],
       },
       fields: [
@@ -148,33 +171,45 @@ async function fetchNihAwards() {
 
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
-      throw new Error(`USASpending request failed on page ${page}: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
+      throw new Error(`USASpending request failed for ${agencyConfig.code} on page ${page}: ${response.status} ${response.statusText} — ${bodyText.slice(0, 300)}`);
     }
 
     const json = await response.json();
     const results = json?.results;
     if (!Array.isArray(results)) {
-      throw new Error(`Unexpected USASpending response shape on page ${page}: no results array found`);
+      throw new Error(`Unexpected USASpending response shape for ${agencyConfig.code} on page ${page}: no results array found`);
     }
 
-    // TEMPORARY DEBUG: log the raw shape of the very first result so we can
-    // see USASpending's actual field names for CFDA / place-of-performance
-    // in the GitHub Actions log. Remove this block once cfda_number and
-    // place_of_performance_state_code are confirmed populating correctly.
-    if (!loggedDebugSample && results.length > 0) {
-      console.log('DEBUG — raw first result object from USASpending:');
-      console.log(JSON.stringify(results[0], null, 2));
-      loggedDebugSample = true;
+    let pageResults = results;
+    if (agencyConfig.excludeSubAgency) {
+      const before = pageResults.length;
+      pageResults = pageResults.filter((r) => r['Awarding Sub Agency'] !== agencyConfig.excludeSubAgency);
+      skippedCount += before - pageResults.length;
     }
 
-    allResults = allResults.concat(results);
-    console.log(`Page ${page}: ${results.length} results (running total: ${allResults.length})`);
+    allResults = allResults.concat(pageResults);
+    console.log(`  ${agencyConfig.code} page ${page}: ${results.length} results (${pageResults.length} kept, running total: ${allResults.length})`);
 
     if (results.length < PAGE_SIZE) break; // last page reached
     page++;
   }
 
-  return allResults.map(parseAward);
+  if (skippedCount > 0) {
+    console.log(`  ${agencyConfig.code}: skipped ${skippedCount} results belonging to ${agencyConfig.excludeSubAgency} (covered by its own dedicated query)`);
+  }
+
+  return allResults.map((r) => parseAward(r, agencyConfig.code));
+}
+
+async function fetchAllAwards() {
+  let allAwards = [];
+  for (const agencyConfig of AGENCY_CONFIGS) {
+    console.log(`Fetching ${agencyConfig.code}...`);
+    const agencyAwards = await fetchAwardsForAgency(agencyConfig);
+    console.log(`${agencyConfig.code}: ${agencyAwards.length} awards fetched.`);
+    allAwards = allAwards.concat(agencyAwards);
+  }
+  return allAwards;
 }
 
 // Builds one batched SQL file: an upsert for the recipient, then an upsert
@@ -202,7 +237,7 @@ function buildSql(awards) {
       INSERT INTO awards (award_id, agency_id, recipient_id, amount, fiscal_year, award_date, cfda_number, place_of_performance_state_id, last_synced_at)
       VALUES (
         ${sqlEscape(award.award_id)},
-        (SELECT id FROM agencies WHERE code = 'NIH'),
+        (SELECT id FROM agencies WHERE code = ${sqlEscape(award.agency_code)}),
         (SELECT id FROM recipients WHERE slug = ${sqlEscape(award.recipient_slug)}),
         ${award.amount},
         ${award.fiscal_year},
@@ -212,6 +247,7 @@ function buildSql(awards) {
         datetime('now')
       )
       ON CONFLICT(award_id) DO UPDATE SET
+        agency_id = excluded.agency_id,
         amount = excluded.amount,
         fiscal_year = excluded.fiscal_year,
         award_date = excluded.award_date,
@@ -247,7 +283,7 @@ function recordSyncRun(status, recordsProcessed, errorMessage) {
 async function main() {
   let awards;
   try {
-    awards = await fetchNihAwards();
+    awards = await fetchAllAwards();
   } catch (err) {
     console.error('Fetch failed:', err.message);
     recordSyncRun('failed', 0, err.message);
@@ -267,7 +303,7 @@ async function main() {
 
   try {
     runD1File(tmpFile);
-    console.log(`Synced ${processed} awards.`);
+    console.log(`Synced ${processed} awards across ${AGENCY_CONFIGS.length} agencies.`);
     recordSyncRun('success', processed, null);
   } catch (err) {
     console.error('D1 write failed:', err.message);
