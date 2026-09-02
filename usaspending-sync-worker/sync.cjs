@@ -49,6 +49,13 @@
 // subtier entity — same pattern as NIH under HHS, but without a separate
 // "whole DOJ" query, since only NIJ specifically was asked for.
 //
+// UPDATE 7: added EXCLUDED_ENTITLEMENT_CFDAS — see the comment above that
+// constant for the full story. In short: mandatory entitlement/formula
+// programs (Medicaid, TANF, SNAP, WIC, etc.) pass the grant-type-code
+// filter below but were silently dominating every dollar total on the
+// site, since a handful of Medicaid records alone run into the hundreds
+// of billions each.
+//
 // NOTE: funding_opportunity_number is still NOT populated by this script.
 // That field only comes from USASpending's per-award detail endpoint, not
 // the bulk search endpoint used here — left NULL honestly rather than
@@ -63,6 +70,41 @@ const os = require('os');
 const USASPENDING_SEARCH_URL = 'https://api.usaspending.gov/api/v2/search/spending_by_award/';
 const D1_DATABASE_NAME = 'federalgranttracker';
 const GRANT_AWARD_TYPE_CODES = ['02', '03', '04', '05'];
+
+// USASpending's own award-type classification (02/03/04/05, filtered above)
+// lumps together two very different things: real discretionary/competitive
+// grants that get posted as opportunities on Grants.gov, and mandatory
+// entitlement/formula programs (Medicaid, TANF, SNAP, WIC, etc.) that are
+// automatic state allocations and structurally never appear as a Grants.gov
+// opportunity. The latter isn't a coding error on USASpending's part — it's
+// a real category difference their type codes don't distinguish — but it
+// silently dominates every dollar total on this site, since a handful of
+// Medicaid records alone can run into the hundreds of billions each.
+//
+// Confirmed live on 2026-09-02 via a direct query: every CFDA below shows
+// significant award volume in this database but ZERO matching rows in the
+// opportunities table (the Grants.gov side) — objective evidence, not a
+// guess, that these are entitlement/formula programs rather than tracked
+// discretionary opportunities:
+//   93.778 Medicaid, 10.555 National School Lunch, 93.558 TANF,
+//   93.767 CHIP, 10.557 WIC, 10.561 SNAP State Admin,
+//   93.658 Title IV-E Foster Care, 93.659 Title IV-E Adoption Assistance
+// Five more show the identical zero-matching-opportunities signature but
+// weren't individually identified by program name — included on the
+// strength of that same live evidence rather than left in on a guess:
+//   93.423, 93.600, 93.568, 93.563, 93.798
+//
+// This is a static list, not a live per-sync check against the
+// opportunities table, specifically so a real competitive CFDA doesn't get
+// wrongly excluded just because the Grants.gov sync (a fully independent
+// schedule) hasn't yet caught up and posted its current opportunity. If
+// USASpending data later reveals more entitlement CFDAs hiding in the
+// totals, add them here explicitly rather than switching to an automatic
+// check.
+const EXCLUDED_ENTITLEMENT_CFDAS = new Set([
+  '93.778', '10.555', '93.558', '93.767', '10.557', '10.561', '93.658', '93.659',
+  '93.423', '93.600', '93.568', '93.563', '93.798',
+]);
 const PAGE_DELAY_MS = 400; // throttle between page requests within one agency
 const AGENCY_DELAY_MS = 8000; // throttle between agencies, to ease cumulative WAF pressure
 const RETRY_DELAY_MS = 5000; // longer pause before a single retry attempt on a failed page
@@ -266,8 +308,14 @@ async function fetchAwardsForAgency(agencyConfig) {
 function buildSql(awards) {
   const statements = [];
 
+  let excludedEntitlementCount = 0;
+
   for (const award of awards) {
     if (!award.award_id || !award.amount || !award.award_date) continue; // skip incomplete records
+    if (award.cfda_number && EXCLUDED_ENTITLEMENT_CFDAS.has(award.cfda_number)) {
+      excludedEntitlementCount++;
+      continue; // mandatory entitlement/formula program, not a real grant opportunity — see EXCLUDED_ENTITLEMENT_CFDAS above
+    }
 
     statements.push(
       `INSERT INTO recipients (slug, name) VALUES (${sqlEscape(award.recipient_slug)}, ${sqlEscape(award.recipient_name)}) ON CONFLICT(slug) DO NOTHING;`
@@ -301,7 +349,7 @@ function buildSql(awards) {
     `);
   }
 
-  return { sql: statements.join('\n'), processed: statements.length / 2 };
+  return { sql: statements.join('\n'), processed: statements.length / 2, excludedEntitlementCount };
 }
 
 function runD1File(sqlFilePath) {
@@ -327,7 +375,10 @@ function recordSyncRun(status, recordsProcessed, errorMessage) {
 // Writes one agency's awards to D1 immediately, so a later agency's
 // failure can never discard an earlier agency's already-fetched data.
 function writeAgencyAwards(agencyCode, awards) {
-  const { sql, processed } = buildSql(awards);
+  const { sql, processed, excludedEntitlementCount } = buildSql(awards);
+  if (excludedEntitlementCount > 0) {
+    console.log(`${agencyCode}: excluded ${excludedEntitlementCount} entitlement/formula-program records (see EXCLUDED_ENTITLEMENT_CFDAS).`);
+  }
   if (processed === 0) {
     console.log(`${agencyCode}: no usable award records this run.`);
     return 0;
