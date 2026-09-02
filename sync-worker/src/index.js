@@ -88,6 +88,17 @@ const AGENCY_SYNC_ORDER = [
     ].join('|'),
   },
   { localCode: 'NIH', grantsGovValue: 'HHS-NIH11' },
+  // UNVERIFIED — added without live confirmation, unlike every other entry
+  // above (each of which was corrected at least once after a real debug
+  // run showed 0-2 hits with a guessed code). 'DOJ-NIJ' follows the same
+  // <parent>-<subagency> pattern Grants.gov uses elsewhere (e.g.
+  // 'HHS-NIH11'), but has not been checked against a live facet dump.
+  // Check the next real run's perAgencySummary for this entry: hitsFound
+  // near 0 almost certainly means this code is wrong and needs the same
+  // fix every other agency here already went through — replace it with
+  // whatever code a debug run's full agency facet list actually shows for
+  // the National Institute of Justice.
+  { localCode: 'NIJ', grantsGovValue: 'DOJ-NIJ' },
 ];
 
 function toIsoDate(mmddyyyy) {
