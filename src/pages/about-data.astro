@@ -9,6 +9,9 @@ let latestRuns: {
   status: string;
   records_processed: number;
 }[] = [];
+let agencyNames: string[] = [];
+let stateDataCount: number | null = null;
+let matchCounts: { match_confidence: string; count: number }[] = [];
 
 try {
   const db = (env as any)?.DB;
@@ -24,6 +27,21 @@ try {
       `)
       .all();
     latestRuns = (result?.results as any[]) ?? [];
+
+    const agenciesResult = await db
+      .prepare(`SELECT name FROM agencies ORDER BY name`)
+      .all();
+    agencyNames = ((agenciesResult?.results as any[]) ?? []).map((a) => a.name);
+
+    const stateDataResult = await db
+      .prepare(`SELECT COUNT(*) as count FROM awards WHERE place_of_performance_state_id IS NOT NULL`)
+      .first();
+    stateDataCount = (stateDataResult?.count as number) ?? 0;
+
+    const matchResult = await db
+      .prepare(`SELECT match_confidence, COUNT(*) as count FROM awards WHERE match_confidence IS NOT NULL GROUP BY match_confidence`)
+      .all();
+    matchCounts = (matchResult?.results as any[]) ?? [];
   }
 } catch (err) {
   console.error('About-data page D1 query failed:', err);
@@ -41,6 +59,8 @@ function formatDateTime(iso: string | null): string {
 
 const grantsGovRun = latestRuns.find((r) => r.source === 'grants_gov');
 const usaspendingRun = latestRuns.find((r) => r.source === 'usaspending');
+const exactMatchCount = matchCounts.find((m) => m.match_confidence === 'exact')?.count ?? 0;
+const cfdaMatchCount = matchCounts.find((m) => m.match_confidence === 'cfda_inferred')?.count ?? 0;
 ---
 <Base title="About this data — Federal Grant Tracker">
 
@@ -50,12 +70,13 @@ const usaspendingRun = latestRuns.find((r) => r.source === 'usaspending');
 
   <p class="intro">
     Federal Grant Tracker is an independent project, not affiliated with any federal agency.
-    Data is pulled directly from two official government sources on a recurring schedule.
+    Data is pulled directly from two official government sources on a recurring schedule, covering
+    {agencyNames.length > 0 ? agencyNames.length : 'the'} tracked {agencyNames.length === 1 ? 'agency' : 'agencies'}{agencyNames.length > 0 ? `: ${agencyNames.join(', ')}.` : '.'}
   </p>
 
   <div class="source-card">
     <h2>Grants.gov — funding opportunities</h2>
-    <p class="source-desc">Opportunity postings, forecasts, and lifecycle status (forecasted / posted / closed / archived) come directly from Grants.gov's public search API.</p>
+    <p class="source-desc">Opportunity postings, forecasts, and lifecycle status (forecasted / posted / closed / archived) come directly from Grants.gov's public search API, across every agency this site tracks.</p>
     {grantsGovRun ? (
       <ul class="stat-list">
         <li><span>Last successful sync</span><span class="mono">{formatDateTime(grantsGovRun.started_at)}</span></li>
@@ -67,22 +88,42 @@ const usaspendingRun = latestRuns.find((r) => r.source === 'usaspending');
   </div>
 
   <div class="source-card">
-    <h2>USASpending.gov — awards and recipients</h2>
-    <p class="source-desc">Award amounts, recipients, and funding totals are sourced from USASpending.gov, the official record of federal spending.</p>
+    <h2>USASpending.gov — awards, recipients, and place of performance</h2>
+    <p class="source-desc">Award amounts, recipients, funding totals, and (where an agency reports it) the state where the funded work actually happens are sourced from USASpending.gov, the official record of federal spending. Place-of-performance data powers the state-by-state map.</p>
     {usaspendingRun ? (
       <ul class="stat-list">
         <li><span>Last successful sync</span><span class="mono">{formatDateTime(usaspendingRun.started_at)}</span></li>
         <li><span>Records processed that run</span><span class="mono">{usaspendingRun.records_processed}</span></li>
+        <li><span>Awards with state data</span><span class="mono">{stateDataCount !== null ? stateDataCount.toLocaleString() : '—'}</span></li>
       </ul>
     ) : (
       <p class="empty">This sync hasn't completed successfully yet — award, recipient, and funding data isn't shown on the site until it does. No estimated or placeholder figures are shown in the meantime.</p>
     )}
   </div>
 
+  <h2 class="section-title">How opportunities and awards are matched</h2>
+  <p class="note">
+    Where possible, a specific award is linked back to the Grants.gov opportunity that produced it (shown as
+    "Where it went last cycle" on opportunity pages). Since USASpending and Grants.gov don't share a common ID,
+    matching happens in two tiers, and each match is honestly labeled with which one found it:
+  </p>
+  <ul class="plain-list">
+    <li><strong>Exact match</strong> — the award directly reports the Grants.gov funding opportunity number it came from. The strongest possible match, but only some agencies report this field.</li>
+    <li><strong>CFDA-inferred match</strong> — the award and opportunity share the same CFDA (assistance listing) number and awarding agency. A reasonable inference, not a guaranteed exact link, and labeled as such wherever it's shown.</li>
+  </ul>
+  {matchCounts.length > 0 ? (
+    <ul class="stat-list">
+      <li><span>Exact matches</span><span class="mono">{exactMatchCount.toLocaleString()}</span></li>
+      <li><span>CFDA-inferred matches</span><span class="mono">{cfdaMatchCount.toLocaleString()}</span></li>
+    </ul>
+  ) : (
+    <p class="empty">No matches recorded yet.</p>
+  )}
+
   <h2 class="section-title">What isn't tracked yet</h2>
   <ul class="plain-list">
-    <li>Award amounts, recipients, and funding totals (pending the USASpending.gov sync completing successfully)</li>
-    <li>State-by-state and per-capita funding breakdowns</li>
+    <li>Per-capita funding breakdowns by state (the raw state totals are tracked and shown on the map; per-capita adjustment isn't built yet)</li>
+    <li>Exact matches are still filling in — funding opportunity numbers are fetched a small batch at a time in the background, so the exact-match count above will keep growing rather than reflecting every award all at once</li>
     <li>Accounts, saved searches, or email alerts — none of this site requires or stores a login</li>
   </ul>
 
